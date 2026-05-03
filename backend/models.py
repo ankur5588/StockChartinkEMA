@@ -1,0 +1,105 @@
+"""Pydantic models for the trading app."""
+from datetime import datetime, timezone
+from typing import Optional, List
+from pydantic import BaseModel, Field, ConfigDict
+import uuid
+
+
+def _now():
+    return datetime.now(timezone.utc)
+
+
+class User(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+    user_id: str
+    email: str
+    name: str
+    picture: Optional[str] = None
+    created_at: datetime
+
+
+class KotakCredentialsInput(BaseModel):
+    mobile: str  # e.g. +919999999999
+    password: str
+    mpin: str
+    consumer_key: str
+    consumer_secret: str
+
+
+class KotakStatus(BaseModel):
+    has_credentials: bool
+    is_authenticated: bool
+    ucc: Optional[str] = None
+    last_login_at: Optional[datetime] = None
+    webhook_token: Optional[str] = None
+    webhook_url: Optional[str] = None
+
+
+class KotakOtpInput(BaseModel):
+    otp: str  # OTP or MPIN-based 2FA code
+
+
+class AlertConfigInput(BaseModel):
+    alert_name: str
+    enabled: bool = True
+    transaction_type: str = "B"  # B or S
+    quantity: int = 1
+    exchange_segment: str = "nse_cm"
+    product: str = "CNC"
+
+
+class AlertConfig(AlertConfigInput):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: str
+    created_at: datetime = Field(default_factory=_now)
+
+
+class Position(BaseModel):
+    symbol: str
+    exchange_segment: str
+    quantity: int
+    avg_price: float
+    ltp: Optional[float] = None
+    pnl: Optional[float] = None
+    product: Optional[str] = None
+
+
+class TradeLog(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: str
+    symbol: str
+    quantity: int
+    price: Optional[float] = None
+    transaction_type: str
+    order_type: str
+    order_id: Optional[str] = None
+    status: str
+    message: Optional[str] = None
+    source: str  # "chartink" | "ema_sl" | "manual"
+    created_at: datetime = Field(default_factory=_now)
+
+
+class WebhookLog(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: str
+    alert_name: Optional[str] = None
+    scan_name: Optional[str] = None
+    stocks: List[str] = []
+    trigger_prices: List[float] = []
+    raw_payload: dict
+    processed: bool = False
+    result_note: Optional[str] = None
+    created_at: datetime = Field(default_factory=_now)
+
+
+class EmaSlRun(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: str
+    symbol: str
+    quantity: int
+    ema10: Optional[float] = None
+    sl_trigger: Optional[float] = None
+    order_id: Optional[str] = None
+    status: str
+    message: Optional[str] = None
+    created_at: datetime = Field(default_factory=_now)
