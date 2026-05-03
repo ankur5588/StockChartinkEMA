@@ -1,0 +1,97 @@
+{
+  "theme": "dark",
+  "archetype": "Archetype 2: The Performance Pro (Terminal/Fintech Variant)",
+  "core_philosophy": "Serious, data-dense, Bloomberg-inspired trading terminal. No playful elements. Function and clarity over decoration. Pure real-time technical aesthetic.",
+  "typography": {
+    "primary_font": "IBM Plex Sans",
+    "mono_font": "JetBrains Mono",
+    "fallback_fonts": "sans-serif",
+    "scale": {
+      "h1": "text-3xl sm:text-4xl tracking-tight font-medium",
+      "h2": "text-2xl sm:text-3xl tracking-tight font-medium",
+      "h3": "text-xl sm:text-2xl tracking-tight font-medium",
+      "h4": "text-lg sm:text-xl font-medium",
+      "body": "text-sm",
+      "small": "text-xs text-muted-foreground",
+      "data_metrics": "font-mono tracking-tight",
+      "labels": "text-[10px] sm:text-xs uppercase tracking-[0.1em] font-semibold text-muted-foreground"
+    },
+    "guidelines": "Do not exceed text-4xl for headers in this dashboard environment. Use JetBrains Mono exclusively for tickers, prices, quantities, P&L numbers, order IDs, and timestamps. Use IBM Plex Sans for general UI labels, descriptions, and headings."
+  },
+  "colors": {
+    "background": {
+      "app": "#0A0A0A",
+      "card": "#141414",
+      "input": "#0A0A0A",
+      "hover": "#1C1C1C",
+      "active": "#262626"
+    },
+    "text": {
+      "primary": "#FFFFFF",
+      "secondary": "#A3A3A3",
+      "muted": "#737373"
+    },
+    "accents": {
+      "brand_primary": "#007AFF",
+      "brand_hover": "#005bb5",
+      "profit": "#00C805",
+      "loss": "#FF3B30",
+      "warning": "#FF9F0A"
+    },
+    "borders": {
+      "default": "#262626",
+      "focus": "#007AFF"
+    },
+    "guidelines": "Strict dark mode. Never use pure #000000 without slight tint context, but #0A0A0A acts as our deep anchor. Avoid neon gradients; use solid bright colors (profit/loss) against dark layered grays for extreme legibility."
+  },
+  "surfaces_and_micro_themes": {
+    "cards": "Grid Borders/Technical look. 1px solid border (#262626). Flat background (#141414). No drop shadows, rely on borders for definition.",
+    "header": "Solid background (#0A0A0A) with a sharp 1px bottom border (#262626). Sticky with z-50.",
+    "buttons": "Sharp or slightly rounded (rounded-sm). Primary buttons use brand color with white text. High contrast hover states (ligher hue).",
+    "tables": "Extremely compact layout (py-2 px-3 cells). Tabular lining for numbers. Alternating row colors (optional, use #0A0A0A and #141414) or just strong bottom borders per row.",
+    "banners": "Live trading warning banner must be high contrast (e.g., Background #FF9F0A, Text #000000) for unmissable visibility."
+  },
+  "spacing_and_layout": {
+    "grid_system": "MODE B: The 'Control Room' Grid. grid-cols-1 md:grid-cols-3 lg:grid-cols-4. Tight gaps (gap-4). Every pixel must be utilized. No jagged bottoms; use h-full to stretch.",
+    "padding": "Compact padding within cards (p-4 or p-5) to maximize data density.",
+    "alignment": "Left-align dense content and data. Right-align numerical columns in tables (prices, P&L, quantities) for easy decimal scanning."
+  },
+  "components": {
+    "table": "Use Shadcn Table. Override cell paddings to be tighter (py-2). Ensure numeric columns are text-right and font-mono.",
+    "forms": "Use Shadcn Forms/Inputs. Inputs must have background #0A0A0A, border #262626, focus ring #007AFF.",
+    "badges": "Use Shadcn Badges. Flat design, no heavy rounded pills. 1px border. E.g., connection status (green dot + text).",
+    "tabs": "Use Shadcn Tabs. Override height h-9 to h-auto. Minimalist styling, border-bottom indicator preferred over full pill backgrounds."
+  },
+  "motion_and_interactions": {
+    "hover": "Background color shifts on table rows and buttons. Essential for row-tracking in dense tables.",
+    "focus": "High contrast 2px ring (#007AFF) with 2px offset (dark) for accessibility.",
+    "transitions": "Fast, subtle. transition: background-color 0.15s ease, border-color 0.15s ease. No bouncy animations."
+  },
+  "media": {
+    "login_background": {
+      "url": "https://images.unsplash.com/photo-1760978632114-0939f0d60045?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMjd8MHwxfHNlYXJjaHwyfHxhYnN0cmFjdCUyMGRhcmslMjB0ZWNoJTIwdGV4dHVyZSUyMGJhY2tncm91bmR8ZW58MHx8fHwxNzc3ODEzMjEwfDA&ixlib=rb-4.1.0&q=85",
+      "description": "Abstract dark metallic wave pattern. Use as split-screen visual for the login page to give a high-end tech feel."
+    },
+    "brand_logo": {
+      "url": "https://images.unsplash.com/photo-1770210217380-d78a69acdc77?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMzV8MHwxfHNlYXJjaHwxfHxtaW5pbWFsaXN0JTIwYWJzdHJhY3QlMjBjb21wYW55JTIwbG9nb3xlbnwwfHx8fDE3Nzc4MTMyMTB8MA&ixlib=rb-4.1.0&q=85",
+      "description": "Minimalist circular logo. Use for the main application header and login screen brand identifier."
+    }
+  },
+  "icons": {
+    "library": "lucide-react",
+    "instructions": "Use Lucide React. Keep icons functional. Size 16px (w-4 h-4) for UI buttons, 20px (w-5 h-5) for section headers."
+  },
+  "testing": {
+    "attributes": "All interactive and key informational elements MUST include a `data-testid` attribute (e.g., data-testid='login-submit-button', data-testid='order-table-row', data-testid='pnl-value')."
+  },
+  "instructions_to_main_agent": {
+    "1": "Global Setup: Apply strict dark mode across the entire app. Update Tailwind config with the specified colors (e.g., bg-app, bg-card, text-primary, text-secondary, accent-profit, accent-loss).",
+    "2": "Fonts: Import IBM Plex Sans and JetBrains Mono from Google Fonts. Apply JetBrains Mono globally to all numeric data, tickers, logs, and P&L.",
+    "3": "Login Page: Split-screen design. Left/Top half features the 'login_background' image with an overlay. Right/Bottom half is the Google Login button and minimal branding.",
+    "4": "Dashboard Header: Contains the Brand Logo, App Name, and the 'Live Trading warning banner' prominently displayed at the top or immediately below the header.",
+    "5": "Kotak Neo Setup Card: A structured form requiring Mobile, Password, Consumer Key, Consumer Secret, MPIN, and a clear OTP submission sub-flow. Use Shadcn forms.",
+    "6": "Data Tables (Positions & Logs): Must feel like a Bloomberg terminal. High density, right-aligned numbers. Profit must be bright green (#00C805), Loss bright red (#FF3B30). Trade logs should mimic a terminal output.",
+    "7": "Webhook URL & Alerts: Prominent Webhook URL card with a 'Copy to Clipboard' button. Alert configs displayed as a dense list with toggle switches.",
+    "8": "EMA10 Stoploss Panel: Needs to feel like a critical 'Command' block. The 'Run EMA10 SL Now' button should be highly distinct, possibly with a warning/amber accent or a specialized confirmation state."
+  }
+}
