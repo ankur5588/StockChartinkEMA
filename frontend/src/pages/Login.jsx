@@ -1,11 +1,13 @@
 import React, { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
-import { Activity, ArrowUpRight, Shield, Zap } from "lucide-react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { Activity, AlertTriangle, ArrowUpRight, Shield, Zap } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 
 export default function Login() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const authError = location.state?.authError;
   const [checking, setChecking] = useState(true);
 
   useEffect(() => {
@@ -128,6 +130,22 @@ export default function Login() {
             </span>
             <ArrowUpRight className="w-4 h-4" />
           </Button>
+
+          {authError && (
+            <div
+              className="border border-loss/40 bg-loss/5 rounded-sm p-3 flex items-start gap-2"
+              data-testid="auth-error-banner"
+            >
+              <AlertTriangle className="w-4 h-4 text-loss mt-0.5 shrink-0" />
+              <div className="text-xs text-loss leading-relaxed">
+                Sign-in failed: <span className="text-white font-mono">{authError}</span>
+                <br />
+                <span className="text-muted-foreground">
+                  Try once more — if the loop continues, allow third-party cookies for this site or open in a non-private window.
+                </span>
+              </div>
+            </div>
+          )}
 
           <div className="pt-6 border-t border-border space-y-3">
             <p className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground">

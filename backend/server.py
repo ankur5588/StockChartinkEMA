@@ -183,7 +183,8 @@ async def auth_session(payload: SessionExchangeInput, response: Response):
             "email": email,
             "name": name,
             "picture": picture,
-        }
+        },
+        "session_token": emergent_session_token,
     }
 
 

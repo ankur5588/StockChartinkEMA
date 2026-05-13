@@ -11,14 +11,11 @@ import {
 import { Toaster } from "@/components/ui/sonner";
 import Login from "@/pages/Login";
 import Dashboard from "@/pages/Dashboard";
-import { api } from "@/lib/api";
+import { api, setSessionToken, clearSessionToken } from "@/lib/api";
 
 function AuthCallback() {
   const navigate = useNavigate();
-  const processed = React.useRef(false);
   useEffect(() => {
-    if (processed.current) return;
-    processed.current = true;
     const hash = window.location.hash || "";
     const match = hash.match(/session_id=([^&]+)/);
     if (!match) {
@@ -26,13 +23,37 @@ function AuthCallback() {
       return;
     }
     const sessionId = decodeURIComponent(match[1]);
+
+    // Module-level dedup via sessionStorage. Emergent's session_id is single-use;
+    // React Strict Mode double-fires effects and would otherwise burn it twice.
+    const usedKey = "chartink_session_id_used";
+    if (sessionStorage.getItem(usedKey) === sessionId) {
+      // Already processed this session_id (e.g. from strict-mode remount). If we
+      // already have a token, go to dashboard; otherwise back to login.
+      if (localStorage.getItem("chartink_session_token")) {
+        navigate("/dashboard", { replace: true });
+      } else {
+        navigate("/login", { replace: true });
+      }
+      return;
+    }
+    sessionStorage.setItem(usedKey, sessionId);
+
+    // Strip the hash from the URL immediately so a hard refresh during the
+    // network call doesn't re-trigger this component with the same hash.
+    window.history.replaceState(null, "", "/dashboard");
+
     (async () => {
       try {
         const res = await api.post("/auth/session", { session_id: sessionId });
-        window.history.replaceState(null, "", "/dashboard");
+        if (res.data?.session_token) {
+          setSessionToken(res.data.session_token);
+        }
         navigate("/dashboard", { replace: true, state: { user: res.data.user } });
       } catch (e) {
-        navigate("/login", { replace: true });
+        clearSessionToken();
+        sessionStorage.removeItem(usedKey);
+        navigate("/login", { replace: true, state: { authError: e?.response?.data?.detail || "Login failed" } });
       }
     })();
   }, [navigate]);

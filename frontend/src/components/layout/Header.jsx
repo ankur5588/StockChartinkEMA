@@ -1,7 +1,7 @@
 import React from "react";
 import { Activity, LogOut } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { api } from "@/lib/api";
+import { api, clearSessionToken } from "@/lib/api";
 import { useNavigate } from "react-router-dom";
 
 export default function Header({ user }) {
@@ -10,6 +10,7 @@ export default function Header({ user }) {
     try {
       await api.post("/auth/logout");
     } catch (e) {}
+    clearSessionToken();
     navigate("/login", { replace: true });
   };
   return (
