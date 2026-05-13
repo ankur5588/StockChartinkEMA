@@ -13,50 +13,67 @@ import Login from "@/pages/Login";
 import Dashboard from "@/pages/Dashboard";
 import { api, setSessionToken, clearSessionToken } from "@/lib/api";
 
+// Module-level promise tracking the in-flight OAuth exchange. Survives
+// component remounts (React Strict Mode mounts → unmounts → remounts effects).
+// Without this, the second remount sees no hash (already stripped) and bounces
+// the user back to /login before the first POST resolves.
+let _inflightAuth = null;
+
 function AuthCallback() {
   const navigate = useNavigate();
   useEffect(() => {
     const hash = window.location.hash || "";
     const match = hash.match(/session_id=([^&]+)/);
+
+    // Helper: route based on whether we already have a valid token
+    const routeWithoutHash = () => {
+      const hasToken = !!localStorage.getItem("chartink_session_token");
+      navigate(hasToken ? "/dashboard" : "/login", { replace: true });
+    };
+
     if (!match) {
-      navigate("/login", { replace: true });
+      // No session_id in hash. If a prior mount kicked off the POST, await it.
+      if (_inflightAuth) {
+        _inflightAuth
+          .then((data) => {
+            navigate("/dashboard", { replace: true, state: { user: data.user } });
+          })
+          .catch(() => routeWithoutHash());
+      } else {
+        routeWithoutHash();
+      }
       return;
     }
+
     const sessionId = decodeURIComponent(match[1]);
 
-    // Module-level dedup via sessionStorage. Emergent's session_id is single-use;
-    // React Strict Mode double-fires effects and would otherwise burn it twice.
-    const usedKey = "chartink_session_id_used";
-    if (sessionStorage.getItem(usedKey) === sessionId) {
-      // Already processed this session_id (e.g. from strict-mode remount). If we
-      // already have a token, go to dashboard; otherwise back to login.
-      if (localStorage.getItem("chartink_session_token")) {
-        navigate("/dashboard", { replace: true });
-      } else {
-        navigate("/login", { replace: true });
-      }
-      return;
+    // Start the exchange exactly once per session_id, even across remounts
+    if (!_inflightAuth) {
+      _inflightAuth = api
+        .post("/auth/session", { session_id: sessionId })
+        .then((res) => {
+          if (res.data?.session_token) {
+            setSessionToken(res.data.session_token);
+          }
+          return res.data;
+        });
     }
-    sessionStorage.setItem(usedKey, sessionId);
 
-    // Strip the hash from the URL immediately so a hard refresh during the
-    // network call doesn't re-trigger this component with the same hash.
-    window.history.replaceState(null, "", "/dashboard");
-
-    (async () => {
-      try {
-        const res = await api.post("/auth/session", { session_id: sessionId });
-        if (res.data?.session_token) {
-          setSessionToken(res.data.session_token);
-        }
-        navigate("/dashboard", { replace: true, state: { user: res.data.user } });
-      } catch (e) {
+    _inflightAuth
+      .then((data) => {
+        window.history.replaceState(null, "", "/dashboard");
+        navigate("/dashboard", { replace: true, state: { user: data.user } });
+      })
+      .catch((e) => {
         clearSessionToken();
-        sessionStorage.removeItem(usedKey);
-        navigate("/login", { replace: true, state: { authError: e?.response?.data?.detail || "Login failed" } });
-      }
-    })();
+        _inflightAuth = null;
+        navigate("/login", {
+          replace: true,
+          state: { authError: e?.response?.data?.detail || "Login failed" },
+        });
+      });
   }, [navigate]);
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-surface-1 text-muted-foreground text-sm">
       Signing you in...
