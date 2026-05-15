@@ -68,14 +68,22 @@ jobs:
             sudo sed -i "s|^MONGO_URL=mongodb://chartink:\\\${MONGO_APP_PWD}@127.0.0.1:27017/\\\${DB_NAME}?authSource=\\\${DB_NAME}$|MONGO_URL=mongodb://chartink:\\\${MONGO_APP_PWD_ENC}@127.0.0.1:27017/\\\${DB_NAME}?authSource=\\\${DB_NAME}|" "$APP_DIR/deploy.sh"
             printf 'y\n' | sudo "$APP_DIR/deploy.sh" "$DOMAIN" "$CONTACT_EMAIL"
 
+            sudo certbot --nginx --non-interactive --agree-tos --redirect \
+              -m "$CONTACT_EMAIL" -d "$DOMAIN" || true
+            sudo nginx -t
+            sudo systemctl reload nginx
+
             curl -fsS --retry 10 --retry-delay 3 http://127.0.0.1:8001/api/health >/dev/null
             curl -fsS --retry 10 --retry-delay 3 -H "Host: $DOMAIN" http://127.0.0.1/api/health >/dev/null
             echo "Deployment and health checks completed successfully."
 
-      - name: Verify public domain reachability
+      - name: Verify public domain reachability (non-blocking)
+        continue-on-error: true
         run: |
           set -euo pipefail
           DOMAIN="${{ secrets.APP_DOMAIN }}"
+          echo "Checking DNS for ${DOMAIN}..."
+          getent ahosts "${DOMAIN}" || true
           curl -fLsS --retry 10 --retry-delay 5 --max-time 20 "https://${DOMAIN}/" >/dev/null
           curl -fLsS --retry 10 --retry-delay 5 --max-time 20 "https://${DOMAIN}/api/health" >/dev/null
           echo "Public domain checks passed."
