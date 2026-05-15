@@ -18,9 +18,17 @@ export function clearSessionToken() {
   localStorage.removeItem(TOKEN_KEY);
 }
 
+// withCredentials is intentionally OFF.
+// The preview ingress force-sets `Access-Control-Allow-Origin: *` while also
+// returning `Access-Control-Allow-Credentials: true`. Browsers reject that
+// combo whenever `withCredentials: true` is set, which breaks the Google
+// OAuth callback POST to /api/auth/session and bounces users back to /login.
+// We rely entirely on the Bearer token in localStorage (attached by the
+// request interceptor below) — the backend accepts EITHER the cookie OR the
+// Authorization header.
 export const api = axios.create({
   baseURL: API_BASE,
-  withCredentials: true,
+  withCredentials: false,
 });
 
 // Attach Authorization: Bearer header from localStorage as a fallback

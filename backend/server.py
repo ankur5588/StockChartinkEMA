@@ -1222,13 +1222,22 @@ async def deployment_info():
 app.include_router(api)
 
 # CORS
-app.add_middleware(
-    CORSMiddleware,
+# IMPORTANT: when allow_credentials=True the browser rejects
+# `Access-Control-Allow-Origin: *`. We use allow_origin_regex so Starlette
+# echoes the caller's Origin header, which is the only valid combo with
+# credentials and avoids the "Login failed" loop on the Google sign-in callback.
+_cors_origins_env = os.environ.get("CORS_ORIGINS", "*").strip()
+_cors_kwargs = dict(
     allow_credentials=True,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
     allow_methods=["*"],
     allow_headers=["*"],
 )
+if _cors_origins_env in ("", "*"):
+    _cors_kwargs["allow_origin_regex"] = ".*"
+else:
+    _cors_kwargs["allow_origins"] = [o.strip() for o in _cors_origins_env.split(",") if o.strip()]
+
+app.add_middleware(CORSMiddleware, **_cors_kwargs)
 
 
 @app.on_event("shutdown")
