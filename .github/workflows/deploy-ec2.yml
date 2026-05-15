@@ -35,11 +35,12 @@ jobs:
         env:
           DOMAIN: ${{ secrets.APP_DOMAIN }}
           CONTACT_EMAIL: ${{ secrets.LETSENCRYPT_EMAIL }}
+          CI: "true"
         with:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
-          envs: DOMAIN,CONTACT_EMAIL
+          envs: DOMAIN,CONTACT_EMAIL,CI
           script_stop: true
           script: |
             set -euo pipefail
@@ -63,4 +64,4 @@ jobs:
               --exclude "backend/.venv" \
               "$SRC_DIR"/ "$APP_DIR"/
             sudo chmod +x "$APP_DIR/deploy.sh"
-            sudo "$APP_DIR/deploy.sh" "$DOMAIN" "$CONTACT_EMAIL"
+            printf 'y\n' | sudo "$APP_DIR/deploy.sh" "$DOMAIN" "$CONTACT_EMAIL"
