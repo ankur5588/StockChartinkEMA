@@ -1,0 +1,34 @@
+{
+  "summary": "Iteration 4 backend + frontend testing complete. All 16 backend tests pass (100%). Verified: (1) symbol-mappings POST bug fix (no more TypeError) — creates with quantity OR amount; (2) /api/orders/manual returns 200 + ok:false + status='skipped' for unauthenticated brokers (kotak_neo, dhan, alice_blue); (3) /api/orders/manual returns 400 for unsupported broker 'foo'; (4) auto_ema_sl block is null/skipped for SELL transactions; (5) Limit order with price=0 is accepted (FE-side validation); (6) /api/ema-preview/RELIANCE returns ema10=₹1382.05 (positive float) and correct sl_trigger/sl_limit; (7) /api/ema-preview/NONEXISTENT returns ema10:null gracefully; (8) Regressions (health, login, me, brokers/status, alerts, trades/logs) all pass; (9) Trade log row with source='manual' is persisted. FRONTEND: ManualOrderCard renders, all data-testid fields visible, Preview EMA10 populates ₹1382.05, SELL side disables auto_sl switch + hides Preview EMA10 button (verified visually faded toggle + hint text changed to 'Only applies to BUY entries — disabled for SELL'), submit button shows 'No broker connected' (disabled red), Symbol Mappings card Add button saves successfully with 'Mapping saved' toast and row appears in mappings-table.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_manual_order_and_mappings.py",
+    "/app/test_reports/pytest/iteration_4_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now ~1437 lines — should be split into routers/{auth,kotak,dhan,alice,brokers,webhooks,ema_sl,orders,symbol_mappings}.py for maintainability (carryover from iteration_2).",
+    "ManualOrderInput allows price=0.0 with order_type='L' — backend accepts and logs. Per review-request this is intentional (FE-side validation), but a defensive backend check (e.g., raising 400 when order_type==L and price<=0) would harden the API for direct callers (curl, automation).",
+    "/api/ema-preview/{symbol} is NOT behind require_user (no auth dependency in the route signature). Public access reveals which symbols have yfinance data. Probably acceptable for read-only public data, but consider adding `user: User = Depends(require_user)` for consistency with other dashboard endpoints.",
+    "_route_order's amo flag passes through to broker.place_order(..., amo=...) for all 3 clients — verified signatures changed. Good.",
+    "auto_ema_sl block in /api/orders/manual correctly guards `transaction_type.upper() in ('B','BUY')` so SELL entries don't get a buggy SL-sell — clean.",
+    "Trade log message field correctly prefixes [broker AMO] when amo=True — useful for debugging."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_manual_order_and_mappings.py (new — 16 tests, 100% pass)"
+  ],
+  "success_rate": {"backend": "100% (16/16)", "frontend": "100% (all flows in review-request verified)"},
+  "test_credentials": "admin@chartink.local / admin123 (from /app/memory/test_credentials.md). Cleared db.login_attempts before testing.",
+  "seed_data_creation": "Tests create TESTBE / RELIANCE / TCS symbol mappings during run and self-clean via DELETE /api/symbol-mappings/{id}. Trade logs written by manual order tests are intentionally left for inspection.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Iteration_4 tests at /app/backend/tests/test_manual_order_and_mappings.py — 16 tests, 100% pass. Run: cd /app/backend && pytest tests/test_manual_order_and_mappings.py -v. KEY VERIFIED: (1) POST /api/symbol-mappings now works (bug TypeError 'multiple values for chartink_symbol' fixed by unpacking model_dump() into dict then overriding); (2) POST /api/orders/manual supports all 3 brokers + AMO + auto_ema_sl, returns ok:false status='skipped' message='[broker AMO] Broker not authenticated' when no broker creds; returns 400 for unsupported broker; auto_ema_sl ema_sl block is null for SELL; (3) GET /api/ema-preview/RELIANCE returns positive float (yfinance .NS suffix works); (4) /api/ema-preview/{garbage} returns ema10:null gracefully; (5) FE ManualOrderCard fully wired with all data-testids — SELL side correctly disables auto_sl + hides Preview EMA10. SHADCN Select dropdown options must be clicked with role='option' selectors after opening, not text= since the trigger and option text both match. Live broker order placement NOT tested (intentional — SEBI static IP requirement)."
+}

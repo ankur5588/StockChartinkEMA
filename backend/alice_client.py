@@ -116,6 +116,7 @@ def place_order(
     exchange: str = "NSE",
     price: float = 0,
     trigger_price: float = 0,
+    amo: bool = False,
 ) -> dict:
     alice = _get(user_id)
     try:
@@ -142,7 +143,7 @@ def place_order(
             stop_loss=None,
             square_off=None,
             trailing_sl=None,
-            is_amo=False,
+            is_amo=bool(amo),
             order_tag="chartink-trade",
         )
     except Exception as e:

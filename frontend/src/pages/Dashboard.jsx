@@ -12,6 +12,7 @@ import TradeLog from "@/components/dashboard/TradeLog";
 import WebhookLog from "@/components/dashboard/WebhookLog";
 import ComplianceCard from "@/components/dashboard/ComplianceCard";
 import SymbolMappings from "@/components/dashboard/SymbolMappings";
+import ManualOrderCard from "@/components/dashboard/ManualOrderCard";
 import { api } from "@/lib/api";
 
 export default function Dashboard({ user }) {
@@ -95,6 +96,9 @@ export default function Dashboard({ user }) {
           </div>
           <AlertsConfig />
         </div>
+
+        {/* Manual Order */}
+        <ManualOrderCard brokersStatus={status} reload={loadStatus} />
 
         {/* Symbol Mappings (full-width) */}
         <SymbolMappings />

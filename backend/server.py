@@ -35,6 +35,7 @@ from models import (
     KotakCredentialsInput,
     KotakOtpInput,
     KotakStatus,
+    ManualOrderInput,
     SymbolMapping,
     SymbolMappingInput,
     TradeLog,
@@ -662,12 +663,10 @@ async def list_symbol_mappings(user: User = Depends(require_user)):
 
 @api.post("/symbol-mappings")
 async def create_symbol_mapping(payload: SymbolMappingInput, user: User = Depends(require_user)):
-    mapping = SymbolMapping(
-        user_id=user.user_id,
-        **payload.model_dump(),
-        chartink_symbol=payload.chartink_symbol.upper().strip(),
-        nse_symbol=payload.nse_symbol.upper().strip(),
-    )
+    data = payload.model_dump()
+    data["chartink_symbol"] = data["chartink_symbol"].upper().strip()
+    data["nse_symbol"] = data["nse_symbol"].upper().strip()
+    mapping = SymbolMapping(user_id=user.user_id, **data)
     doc = mapping.model_dump()
     doc["created_at"] = doc["created_at"].isoformat()
     # Replace any existing mapping with the same (chartink_symbol, broker) pair
@@ -938,7 +937,9 @@ async def chartink_webhook(token: str, request: Request):
     return {"ok": True, "received": True, "placed": placed_any, "notes": result_notes}
 
 
-def _route_order(user_id, broker, symbol, transaction_type, quantity, product, exchange_segment):
+def _route_order(user_id, broker, symbol, transaction_type, quantity, product,
+                 exchange_segment, order_type="MKT", price=0.0, trigger_price=0.0,
+                 amo=False):
     """Unified order router. Returns (status, order_id, message)."""
     try:
         if broker == "kotak_neo":
@@ -949,9 +950,12 @@ def _route_order(user_id, broker, symbol, transaction_type, quantity, product, e
                 trading_symbol=symbol,
                 transaction_type=transaction_type,
                 quantity=quantity,
-                order_type="MKT",
+                order_type=order_type,
                 product=product,
                 exchange_segment=exchange_segment,
+                price=str(price),
+                trigger_price=str(trigger_price),
+                amo=amo,
             )
             oid = (resp or {}).get("nOrdNo") or (resp or {}).get("orderId") or ((resp or {}).get("data") or {}).get("nOrdNo")
             return ("success", oid, f"Order placed for {symbol}")
@@ -961,8 +965,10 @@ def _route_order(user_id, broker, symbol, transaction_type, quantity, product, e
             resp = dhan_client.place_order(
                 user_id=user_id, symbol=symbol,
                 transaction_type=transaction_type, quantity=quantity,
-                order_type="MKT", product=product,
+                order_type=order_type, product=product,
                 exchange_segment="NSE_EQ" if exchange_segment.lower().startswith("nse") else "BSE_EQ",
+                price=float(price), trigger_price=float(trigger_price),
+                amo=amo,
             )
             return ("success", resp.get("order_id"), f"Dhan order placed for {symbol}")
         if broker == "alice_blue":
@@ -971,8 +977,10 @@ def _route_order(user_id, broker, symbol, transaction_type, quantity, product, e
             resp = alice_client.place_order(
                 user_id=user_id, symbol=symbol,
                 transaction_type=transaction_type, quantity=quantity,
-                order_type="MKT", product=product,
+                order_type=order_type, product=product,
                 exchange=("NSE" if exchange_segment.lower().startswith("nse") else "BSE"),
+                price=float(price), trigger_price=float(trigger_price),
+                amo=amo,
             )
             return ("success", resp.get("order_id"), f"Alice order placed for {symbol}")
         return ("error", None, f"Unknown broker '{broker}'")
@@ -1004,6 +1012,179 @@ async def list_trade_logs(user: User = Depends(require_user), limit: int = 50):
         .limit(limit)
     )
     return {"logs": [c async for c in cur]}
+
+
+# =============================================================================
+# MANUAL ORDER PLACEMENT
+# After-market-order (AMO) support + optional auto EMA10 stoploss after entry.
+# =============================================================================
+
+def _place_ema_sl_for(user_id: str, broker: str, symbol: str, quantity: int,
+                     product: str, exchange_segment: str) -> tuple[Optional[float], Optional[str], str]:
+    """Compute EMA10 for `symbol` and place a SL-SELL order at that trigger.
+
+    Returns (ema_value, order_id, message). On failure, ema_value/order_id may
+    be None and message describes why.
+    """
+    ema = compute_ema10(symbol, exchange_segment)
+    if ema is None:
+        return (None, None, "EMA10: skipped (no historical data)")
+    limit_price = round(ema * 0.995, 2)
+    try:
+        if broker == "kotak_neo":
+            resp = kotak_client.place_order(
+                user_id=user_id, trading_symbol=symbol,
+                transaction_type="S", quantity=quantity,
+                order_type="SL", product=product,
+                exchange_segment=exchange_segment,
+                price=str(limit_price), trigger_price=str(ema),
+            )
+            oid = (resp or {}).get("nOrdNo") or (resp or {}).get("orderId")
+        elif broker == "dhan":
+            resp = dhan_client.place_order(
+                user_id=user_id, symbol=symbol,
+                transaction_type="S", quantity=quantity,
+                order_type="SL", product=product,
+                exchange_segment="NSE_EQ" if exchange_segment.lower().startswith("nse") else "BSE_EQ",
+                price=limit_price, trigger_price=ema,
+            )
+            oid = resp.get("order_id")
+        elif broker == "alice_blue":
+            resp = alice_client.place_order(
+                user_id=user_id, symbol=symbol,
+                transaction_type="S", quantity=quantity,
+                order_type="SL", product=product,
+                exchange=("NSE" if exchange_segment.lower().startswith("nse") else "BSE"),
+                price=limit_price, trigger_price=ema,
+            )
+            oid = resp.get("order_id")
+        else:
+            return (ema, None, f"EMA10: unsupported broker '{broker}'")
+        return (ema, oid, f"EMA10 SL placed @ {ema} (limit {limit_price})")
+    except (kotak_client.KotakError, dhan_client.DhanError, alice_client.AliceError) as e:
+        return (ema, None, f"EMA10 SL failed: {e}")
+    except Exception as e:
+        return (ema, None, f"EMA10 SL unexpected error: {e}")
+
+
+@api.post("/orders/manual")
+async def place_manual_order(payload: ManualOrderInput, user: User = Depends(require_user)):
+    """Place a manual order (with optional AMO + optional EMA10 stoploss).
+
+    Body fields:
+      broker, symbol, transaction_type (B|S), quantity, order_type (MKT|L),
+      price (for limit orders), product (CNC|MIS|NRML), exchange_segment,
+      amo (bool), auto_ema_sl (bool — places a SL-SELL after a long entry only).
+    """
+    broker = payload.broker
+    if broker not in ("kotak_neo", "dhan", "alice_blue"):
+        raise HTTPException(status_code=400, detail=f"Unsupported broker '{broker}'")
+
+    # Place the main order
+    status, order_id, msg = _route_order(
+        user_id=user.user_id,
+        broker=broker,
+        symbol=payload.symbol.upper().strip(),
+        transaction_type=payload.transaction_type,
+        quantity=int(payload.quantity),
+        product=payload.product,
+        exchange_segment=payload.exchange_segment,
+        order_type=payload.order_type,
+        price=payload.price,
+        amo=payload.amo,
+    )
+
+    main_log_msg = f"[{broker}{' AMO' if payload.amo else ''}] {msg}"
+    tl = TradeLog(
+        user_id=user.user_id,
+        symbol=payload.symbol.upper().strip(),
+        quantity=int(payload.quantity),
+        price=payload.price if payload.order_type.upper() in ("L", "LIMIT") else None,
+        transaction_type=payload.transaction_type,
+        order_type=payload.order_type,
+        order_id=order_id,
+        status=status,
+        message=main_log_msg,
+        source="manual",
+    )
+    tdoc = tl.model_dump()
+    tdoc["created_at"] = tdoc["created_at"].isoformat()
+    await db.trade_logs.insert_one(tdoc)
+
+    response = {
+        "ok": status == "success",
+        "status": status,
+        "order_id": order_id,
+        "message": main_log_msg,
+        "ema_sl": None,
+    }
+
+    if status != "success":
+        # Don't try to place a stoploss when the entry failed
+        if status == "error":
+            raise HTTPException(status_code=400, detail=msg)
+        return response
+
+    # Optional EMA10 stoploss (only for BUY entries that hold a long position)
+    if payload.auto_ema_sl and payload.transaction_type.upper() in ("B", "BUY"):
+        ema, sl_oid, sl_msg = _place_ema_sl_for(
+            user_id=user.user_id,
+            broker=broker,
+            symbol=payload.symbol.upper().strip(),
+            quantity=int(payload.quantity),
+            product=payload.product,
+            exchange_segment=payload.exchange_segment,
+        )
+        sl_status = "placed" if sl_oid else ("skipped" if ema is None else "error")
+        run = EmaSlRun(
+            user_id=user.user_id,
+            symbol=f"{payload.symbol.upper().strip()} [{broker}]",
+            quantity=int(payload.quantity),
+            ema10=ema,
+            sl_trigger=ema,
+            order_id=sl_oid,
+            status=sl_status,
+            message=sl_msg,
+        )
+        rdoc = run.model_dump()
+        rdoc["created_at"] = rdoc["created_at"].isoformat()
+        await db.ema_sl_runs.insert_one(rdoc)
+
+        # Also append to trade logs so it shows in the dashboard log
+        tl_sl = TradeLog(
+            user_id=user.user_id,
+            symbol=payload.symbol.upper().strip(),
+            quantity=int(payload.quantity),
+            price=ema,
+            transaction_type="S",
+            order_type="SL",
+            order_id=sl_oid,
+            status=sl_status,
+            message=f"[{broker}] {sl_msg}",
+            source="manual_ema_sl",
+        )
+        sdoc = tl_sl.model_dump()
+        sdoc["created_at"] = sdoc["created_at"].isoformat()
+        await db.trade_logs.insert_one(sdoc)
+
+        response["ema_sl"] = {
+            "ema10": ema,
+            "status": sl_status,
+            "order_id": sl_oid,
+            "message": sl_msg,
+        }
+
+    return response
+
+
+@api.get("/ema-preview/{symbol}")
+async def ema_preview(symbol: str, exchange_segment: str = "nse_cm"):
+    """Return the latest EMA10 for a symbol — used by the manual order UI
+    to preview the stoploss trigger before placing the order."""
+    ema = compute_ema10(symbol, exchange_segment)
+    return {"symbol": symbol.upper(), "exchange_segment": exchange_segment,
+            "ema10": ema, "sl_trigger": ema,
+            "sl_limit": round(ema * 0.995, 2) if ema else None}
 
 
 # =============================================================================

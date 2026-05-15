@@ -138,3 +138,17 @@ class EmaSlRun(BaseModel):
     status: str
     message: Optional[str] = None
     created_at: datetime = Field(default_factory=_now)
+
+
+class ManualOrderInput(BaseModel):
+    """Used by the dashboard 'place order manually' form."""
+    broker: str = "kotak_neo"  # kotak_neo | dhan | alice_blue
+    symbol: str
+    transaction_type: str = "B"  # B | S
+    quantity: int = Field(..., gt=0)
+    order_type: str = "MKT"  # MKT | L
+    price: float = 0.0  # used when order_type=L
+    product: str = "CNC"  # CNC | MIS | NRML
+    exchange_segment: str = "nse_cm"  # nse_cm | bse_cm
+    amo: bool = False  # After-Market Order flag
+    auto_ema_sl: bool = False  # also place EMA10-based stoploss after entry

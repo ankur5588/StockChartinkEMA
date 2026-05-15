@@ -299,6 +299,7 @@ def place_order(
     price: str = "0",
     trigger_price: str = "0",
     validity: str = "DAY",
+    amo: bool = False,
 ) -> dict:
     client = get_client(user_id)
     try:
@@ -311,7 +312,7 @@ def place_order(
             validity=validity,
             trading_symbol=trading_symbol,
             transaction_type=transaction_type,
-            amo="NO",
+            amo="YES" if amo else "NO",
             disclosed_quantity="0",
             market_protection="0",
             pf="N",

@@ -158,6 +158,7 @@ def place_order(
     price: float = 0,
     trigger_price: float = 0,
     security_id: Optional[str] = None,
+    amo: bool = False,
 ) -> dict:
     client = _get(user_id)
 
@@ -178,19 +179,32 @@ def place_order(
     dhan_ot = ot_map.get(order_type.upper(), "MARKET")
     dhan_pt = pt_map.get(product.upper(), "CNC")
 
+    place_kwargs = dict(
+        security_id=str(sid),
+        exchange_segment=exchange_segment,
+        transaction_type=dhan_txn,
+        quantity=int(quantity),
+        order_type=dhan_ot,
+        product_type=dhan_pt,
+        price=float(price),
+        trigger_price=float(trigger_price),
+        validity="DAY",
+        disclosed_quantity=0,
+    )
+    if amo:
+        # dhanhq exposes after_market_order=True; pass leniently in case
+        # older versions don't accept it
+        place_kwargs["after_market_order"] = True
+
     try:
-        resp = client.place_order(
-            security_id=str(sid),
-            exchange_segment=exchange_segment,
-            transaction_type=dhan_txn,
-            quantity=int(quantity),
-            order_type=dhan_ot,
-            product_type=dhan_pt,
-            price=float(price),
-            trigger_price=float(trigger_price),
-            validity="DAY",
-            disclosed_quantity=0,
-        )
+        resp = client.place_order(**place_kwargs)
+    except TypeError:
+        # dhanhq SDK without AMO support → retry without the AMO flag
+        place_kwargs.pop("after_market_order", None)
+        try:
+            resp = client.place_order(**place_kwargs)
+        except Exception as e:
+            raise DhanError(f"place_order failed: {e}")
     except Exception as e:
         raise DhanError(f"place_order failed: {e}")
 
