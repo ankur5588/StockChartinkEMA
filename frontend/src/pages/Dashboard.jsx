@@ -4,6 +4,7 @@ import LiveBanner from "@/components/layout/LiveBanner";
 import ConnectionCard from "@/components/dashboard/ConnectionCard";
 import DhanCard from "@/components/dashboard/DhanCard";
 import AliceBlueCard from "@/components/dashboard/AliceBlueCard";
+import INDmoneyCard from "@/components/dashboard/INDmoneyCard";
 import WebhookCard from "@/components/dashboard/WebhookCard";
 import EmaPanel from "@/components/dashboard/EmaPanel";
 import AlertsConfig from "@/components/dashboard/AlertsConfig";
@@ -45,7 +46,8 @@ export default function Dashboard({ user }) {
   const anyAuth =
     !!status?.kotak_neo?.is_authenticated ||
     !!status?.dhan?.is_authenticated ||
-    !!status?.alice_blue?.is_authenticated;
+    !!status?.alice_blue?.is_authenticated ||
+    !!status?.indmoney?.is_authenticated;
 
   return (
     <div
@@ -75,10 +77,11 @@ export default function Dashboard({ user }) {
           <div className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground font-semibold mb-3">
             / brokers
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
             <ConnectionCard status={kotakStatus} reload={loadStatus} />
             <DhanCard status={status?.dhan} reload={loadStatus} />
             <AliceBlueCard status={status?.alice_blue} reload={loadStatus} />
+            <INDmoneyCard status={status?.indmoney} reload={loadStatus} />
           </div>
         </section>
 

@@ -19,6 +19,7 @@ const BROKERS = [
   { value: "kotak_neo", label: "Kotak Neo" },
   { value: "dhan", label: "Dhan" },
   { value: "alice_blue", label: "Alice Blue" },
+  { value: "indmoney", label: "INDmoney" },
 ];
 
 const EXCHANGES = [
