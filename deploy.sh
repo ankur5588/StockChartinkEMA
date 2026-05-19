@@ -27,11 +27,13 @@ set -euo pipefail
 
 # ---------- args ----------
 DOMAIN="${1:-}"
-ADMIN_EMAIL="${2:-}"
-if [[ -z "$DOMAIN" || -z "$ADMIN_EMAIL" ]]; then
-    echo "Usage: sudo $0 <domain> <admin-email>"
-    echo "Example: sudo $0 chartinktrade.com admin@chartinktrade.com"
-    exit 1
+STATIC_IP="$(curl -s https://api.ipify.org)"
+if [[ -z "$DOMAIN" ]]; then
+    DOMAIN="${STATIC_IP}.nip.io"
+    ADMIN_EMAIL="${2:-admin@${DOMAIN}}"
+    warn "No domain provided — using nip.io temp URL: http://${DOMAIN}"
+elif [[ -z "${2:-}" ]]; then
+    ADMIN_EMAIL="admin@${DOMAIN}"
 fi
 if [[ "$(id -u)" -ne 0 ]]; then
     echo "Run as root: sudo $0 ..."
@@ -50,10 +52,8 @@ ok()   { echo -e "\033[1;32m[ok]\033[0m $*"; }
 
 # ---------- 0. sanity ----------
 log "0/12 Sanity checks"
-if ! grep -qi "ubuntu 22" /etc/os-release; then
-    warn "This script is tested on Ubuntu 22.04. You appear to be on something else — continue at your own risk."
-    read -rp "Proceed anyway? [y/N] " ans
-    [[ "$ans" =~ ^[Yy]$ ]] || exit 1
+if ! grep -qiE "ubuntu (22|24)" /etc/os-release; then
+    warn "This script is tested on Ubuntu 22.04/24.04. Continue at your own risk."
 fi
 if [[ ! -d "$APP_DIR" ]]; then
     warn "Expected repo at $APP_DIR. Clone it first:"
@@ -71,8 +71,15 @@ apt-get install -yq software-properties-common gnupg curl ca-certificates ufw gi
 # Python 3.11
 add-apt-repository -y ppa:deadsnakes/ppa >/dev/null
 apt-get update -qq
-apt-get install -yq python3.11 python3.11-venv python3.11-dev
+apt-get install -yq $PY_CMD $PY_CMD-venv $PY_CMD-dev
 # Node 18 + Yarn
+# Python
+PY_CMD="python3"
+if command -v python3.12 &>/dev/null; then
+    PY_CMD="python3.12"
+elif command -v $PY_CMD &>/dev/null; then
+    PY_CMD=python3
+fi
 if ! command -v node >/dev/null; then
     curl -fsSL https://deb.nodesource.com/setup_18.x | bash - >/dev/null
     apt-get install -yq nodejs
@@ -106,7 +113,7 @@ sudo -u "$APP_USER" git -C "$APP_DIR" pull --ff-only || warn "git pull failed �
 log "4/12 Ensuring FERNET_KEY exists"
 FERNET_KEY_FILE="/root/.chartink_fernet_key"
 if [[ ! -f "$FERNET_KEY_FILE" ]]; then
-    python3.11 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" > "$FERNET_KEY_FILE" 2>/dev/null || \
+    $PY_CMD -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())" > "$FERNET_KEY_FILE" 2>/dev/null || \
         python3 -c "import base64, os; print(base64.urlsafe_b64encode(os.urandom(32)).decode())" > "$FERNET_KEY_FILE"
     chmod 600 "$FERNET_KEY_FILE"
     cp "$FERNET_KEY_FILE" "/root/FERNET_KEY.backup"
@@ -165,7 +172,7 @@ chmod 600 "$ENV_FILE"
 # ---------- 7. Python venv + deps ----------
 log "7/12 Installing Python dependencies"
 if [[ ! -d "$VENV_DIR" ]]; then
-    sudo -u "$APP_USER" python3.11 -m venv "$VENV_DIR"
+    sudo -u "$APP_USER" $PY_CMD -m venv "$VENV_DIR"
 fi
 sudo -u "$APP_USER" bash -lc "
     source '$VENV_DIR/bin/activate'
