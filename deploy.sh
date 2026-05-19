@@ -162,15 +162,14 @@ ok "MongoDB auth enabled. Passwords in $MONGO_APP_PWD_FILE and $MONGO_ROOT_PWD_F
 log "6/12 Writing backend/.env"
 ENV_FILE="$APP_DIR/backend/.env"
 MONGO_APP_PWD_ENC=$($PY_CMD -c "import urllib.parse, sys; print(urllib.parse.quote_plus(sys.argv[1]))" "$MONGO_APP_PWD")
-cat > "$ENV_FILE" <<EOF
-MONGO_URL=mongodb://chartink:${MONGO_APP_PWD_ENC}@127.0.0.1:27017/${DB_NAME}?authSource=${DB_NAME}
-DB_NAME=${DB_NAME}
-# Determine protocol: https for real domains, http for nip.io temp URLs
 if [[ "$DOMAIN" == *".nip.io" ]]; then
     PROTO="http"
 else
     PROTO="https"
 fi
+cat > "$ENV_FILE" <<EOF
+MONGO_URL=mongodb://chartink:${MONGO_APP_PWD_ENC}@127.0.0.1:27017/${DB_NAME}?authSource=${DB_NAME}
+DB_NAME=${DB_NAME}
 CORS_ORIGINS=${PROTO}://${DOMAIN}
 FERNET_KEY=${FERNET_KEY}
 STATIC_IP_DEPLOYMENT=true

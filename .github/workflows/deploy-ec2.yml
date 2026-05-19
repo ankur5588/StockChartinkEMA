@@ -66,7 +66,7 @@ jobs:
               CONTACT_EMAIL="admin@chartink.local"
             fi
 
-            printf 'y\n' | sudo "$APP_DIR/deploy.sh" "$DOMAIN" "$CONTACT_EMAIL"
+            printf 'y\n' | sudo CI="$CI" "$APP_DIR/deploy.sh" "$DOMAIN" "$CONTACT_EMAIL"
 
             # Only run certbot if we have a real domain (not nip.io)
             if [[ "$DOMAIN" != *".nip.io" ]]; then
