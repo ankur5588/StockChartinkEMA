@@ -20,6 +20,7 @@ const BROKERS = [
   { value: "dhan", label: "Dhan" },
   { value: "alice_blue", label: "Alice Blue" },
   { value: "indmoney", label: "INDmoney" },
+  { value: "delta_exchange", label: "Delta Exchange" },
 ];
 
 const EXCHANGES = [

@@ -31,6 +31,7 @@ const BROKERS = [
   { value: "dhan", label: "Dhan" },
   { value: "alice_blue", label: "Alice" },
   { value: "indmoney", label: "INDmoney" },
+  { value: "delta_exchange", label: "Delta" },
 ];
 
 const CATEGORIES = [
@@ -450,7 +451,7 @@ export default function SymbolMappings() {
                         <Cell className="text-right">{m.quantity ?? "\u2014"}</Cell>
                         <Cell className="text-right">{m.amount ? `\u20B9${m.amount}` : "\u2014"}</Cell>
                         <Cell className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                          {m.broker === "*" ? "any" : m.broker === "kotak_neo" ? "Kotak" : m.broker === "dhan" ? "Dhan" : m.broker === "alice_blue" ? "Alice" : m.broker === "indmoney" ? "INDmoney" : m.broker}
+                          {m.broker === "*" ? "any" : m.broker === "kotak_neo" ? "Kotak" : m.broker === "dhan" ? "Dhan" : m.broker === "alice_blue" ? "Alice" : m.broker === "indmoney" ? "INDmoney" : m.broker === "delta_exchange" ? "Delta" : m.broker}
                         </Cell>
                         <Cell>
                           <span className={`font-mono text-[10px] px-1.5 py-0.5 rounded-sm border ${m.transaction_type === "B" ? "border-profit/30 text-profit bg-profit/10" : "border-loss/30 text-loss bg-loss/10"}`}>

@@ -26,6 +26,7 @@ import kotak_client
 import dhan_client
 import alice_client
 import indmoney_client
+import delta_client
 import auth_service
 from ema_service import compute_ema10
 from backtest_service import run_backtest, run_signal_backtest, NIFTY_100
@@ -36,6 +37,7 @@ from models import (
     CategoryAmountInput,
     CategoryAmount,
     CATEGORIES,
+    DeltaCredentialsInput,
     DhanCredentialsInput,
     EmaSchedule,
     EmaScheduleInput,
@@ -630,6 +632,71 @@ async def indmoney_positions(user: User = Depends(require_user)):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+# ---------------------------------------------------------------------------
+# Delta Exchange
+# ---------------------------------------------------------------------------
+
+@api.post("/delta/credentials")
+async def delta_save_credentials(payload: DeltaCredentialsInput, user: User = Depends(require_user)):
+    creds = {k: v.strip() if isinstance(v, str) else v for k, v in payload.model_dump().items()}
+    encrypted = encrypt_dict(creds)
+    await db.delta_credentials.update_one(
+        {"user_id": user.user_id},
+        {"$set": {"user_id": user.user_id, "encrypted": encrypted,
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return {"ok": True}
+
+
+@api.delete("/delta/credentials")
+async def delta_delete_credentials(user: User = Depends(require_user)):
+    await db.delta_credentials.delete_one({"user_id": user.user_id})
+    delta_client.disconnect(user.user_id)
+    return {"ok": True}
+
+
+@api.get("/delta/status")
+async def delta_status(user: User = Depends(require_user)):
+    doc = await db.delta_credentials.find_one({"user_id": user.user_id}, {"_id": 0})
+    return {
+        "has_credentials": bool(doc),
+        "is_authenticated": delta_client.is_authenticated(user.user_id),
+        "last_login_at": (doc or {}).get("last_login_at"),
+    }
+
+
+@api.post("/delta/connect")
+async def delta_connect(user: User = Depends(require_user)):
+    doc = await db.delta_credentials.find_one({"user_id": user.user_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=400, detail="Save Delta Exchange credentials first")
+    creds = decrypt_dict(doc["encrypted"])
+    try:
+        delta_client.connect(user.user_id, creds["api_key"], creds["api_secret"], creds.get("environment", "india_prod"))
+    except delta_client.DeltaError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await db.delta_credentials.update_one(
+        {"user_id": user.user_id},
+        {"$set": {"last_login_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"ok": True}
+
+
+@api.post("/delta/disconnect")
+async def delta_disconnect(user: User = Depends(require_user)):
+    delta_client.disconnect(user.user_id)
+    return {"ok": True}
+
+
+@api.get("/delta/positions")
+async def delta_positions(user: User = Depends(require_user)):
+    try:
+        return {"positions": delta_client.get_positions(user.user_id)}
+    except delta_client.DeltaError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 # =============================================================================
 # UNIFIED BROKERS & POSITIONS
 # =============================================================================
@@ -656,6 +723,7 @@ async def brokers_status(request: Request, user: User = Depends(require_user)):
     dhan_doc = await db.dhan_credentials.find_one({"user_id": user.user_id}, {"_id": 0})
     alice_doc = await db.alice_credentials.find_one({"user_id": user.user_id}, {"_id": 0})
     indmoney_doc = await db.indmoney_credentials.find_one({"user_id": user.user_id}, {"_id": 0})
+    delta_doc = await db.delta_credentials.find_one({"user_id": user.user_id}, {"_id": 0})
     webhook_token = await _ensure_user_webhook_token(user.user_id)
     base = _base_url_from_request(request)
     return {
@@ -679,6 +747,11 @@ async def brokers_status(request: Request, user: User = Depends(require_user)):
             "has_credentials": bool(indmoney_doc),
             "is_authenticated": indmoney_client.is_authenticated(user.user_id),
             "last_login_at": (indmoney_doc or {}).get("last_login_at"),
+        },
+        "delta_exchange": {
+            "has_credentials": bool(delta_doc),
+            "is_authenticated": delta_client.is_authenticated(user.user_id),
+            "last_login_at": (delta_doc or {}).get("last_login_at"),
         },
         "webhook_token": webhook_token,
         "webhook_url": f"{base}/api/webhooks/chartink/{webhook_token}",
@@ -710,6 +783,11 @@ async def all_positions(user: User = Depends(require_user)):
             positions.extend(indmoney_client.get_positions(user.user_id))
         except Exception as e:
             errors["indmoney"] = str(e)
+    if delta_client.is_authenticated(user.user_id):
+        try:
+            positions.extend(delta_client.get_positions(user.user_id))
+        except Exception as e:
+            errors["delta_exchange"] = str(e)
     return {"positions": positions, "errors": errors}
 
 
@@ -1279,8 +1357,19 @@ def _route_order(user_id, broker, symbol, transaction_type, quantity, product,
                 price=float(price), trigger_price=float(trigger_price),
             )
             return ("success", resp.get("order_id"), f"INDmoney order placed for {symbol}")
+        if broker == "delta_exchange":
+            if not delta_client.is_authenticated(user_id):
+                return ("skipped", None, "Delta Exchange not authenticated")
+            resp = delta_client.place_order(
+                user_id=user_id, symbol=symbol,
+                transaction_type=transaction_type, quantity=quantity,
+                order_type=order_type, product=product,
+                exchange_segment="CRYPTO",
+                price=float(price), trigger_price=float(trigger_price),
+            )
+            return ("success", resp.get("order_id"), f"Delta order placed for {symbol}")
         return ("error", None, f"Unknown broker '{broker}'")
-    except (kotak_client.KotakError, dhan_client.DhanError, alice_client.AliceError, indmoney_client.IndMoneyError) as e:
+    except (kotak_client.KotakError, dhan_client.DhanError, alice_client.AliceError, indmoney_client.IndMoneyError, delta_client.DeltaError) as e:
         return ("error", None, str(e))
     except Exception as e:
         return ("error", None, f"unexpected: {e}")
@@ -1367,10 +1456,19 @@ def _place_ema_sl_for(user_id: str, broker: str, symbol: str, quantity: int,
                 price=limit_price, trigger_price=trigger_price,
             )
             oid = resp.get("order_id")
+        elif broker == "delta_exchange":
+            resp = delta_client.place_order(
+                user_id=user_id, symbol=symbol,
+                transaction_type="S", quantity=quantity,
+                order_type="SL", product=product,
+                exchange_segment="CRYPTO",
+                price=limit_price, trigger_price=trigger_price,
+            )
+            oid = resp.get("order_id")
         else:
             return (ema, None, f"EMA10: unsupported broker '{broker}'")
         return (ema, oid, f"EMA10 SL placed @ {trigger_price} (limit {limit_price})")
-    except (kotak_client.KotakError, dhan_client.DhanError, alice_client.AliceError, indmoney_client.IndMoneyError) as e:
+    except (kotak_client.KotakError, dhan_client.DhanError, alice_client.AliceError, indmoney_client.IndMoneyError, delta_client.DeltaError) as e:
         return (ema, None, f"EMA10 SL failed: {e}")
     except Exception as e:
         return (ema, None, f"EMA10 SL unexpected error: {e}")
@@ -1532,6 +1630,7 @@ async def _run_ema_sl_for_user(user_id: str, connected: Optional[dict] = None) -
             "dhan": dhan_client.is_authenticated(user_id),
             "alice_blue": alice_client.is_authenticated(user_id),
             "indmoney": indmoney_client.is_authenticated(user_id),
+            "delta_exchange": delta_client.is_authenticated(user_id),
         }
 
     # Aggregate positions across all connected brokers
@@ -1556,6 +1655,11 @@ async def _run_ema_sl_for_user(user_id: str, connected: Optional[dict] = None) -
             all_positions.extend(indmoney_client.get_positions(user_id))
         except Exception as e:
             logger.warning("indmoney positions fetch failed: %s", e)
+    if connected.get("delta_exchange"):
+        try:
+            all_positions.extend(delta_client.get_positions(user_id))
+        except Exception as e:
+            logger.warning("delta positions fetch failed: %s", e)
 
     runs: List[dict] = []
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -1623,9 +1727,18 @@ async def _run_ema_sl_for_user(user_id: str, connected: Optional[dict] = None) -
                         price=limit_price, trigger_price=trigger_price,
                     )
                     run.order_id = resp.get("order_id")
+                elif broker == "delta_exchange":
+                    resp = delta_client.place_order(
+                        user_id=user_id, symbol=sym,
+                        transaction_type="S", quantity=pos["quantity"],
+                        order_type="SL", product=pos.get("product") or "CNC",
+                        exchange_segment="CRYPTO",
+                        price=limit_price, trigger_price=trigger_price,
+                    )
+                    run.order_id = resp.get("order_id")
                 run.status = "placed"
                 run.message = f"SL placed at {trigger_price} (limit {limit_price}) on {broker}"
-            except (kotak_client.KotakError, dhan_client.DhanError, alice_client.AliceError, indmoney_client.IndMoneyError) as e:
+            except (kotak_client.KotakError, dhan_client.DhanError, alice_client.AliceError, indmoney_client.IndMoneyError, delta_client.DeltaError) as e:
                 run.status = "error"
                 run.message = str(e)
             except Exception as e:

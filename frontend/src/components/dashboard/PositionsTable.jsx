@@ -131,6 +131,8 @@ function brokerLabel(b) {
   if (b === "kotak_neo") return "Kotak";
   if (b === "dhan") return "Dhan";
   if (b === "alice_blue") return "Alice";
+  if (b === "indmoney") return "INDmoney";
+  if (b === "delta_exchange") return "Delta";
   return b || "—";
 }
 

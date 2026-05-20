@@ -41,7 +41,13 @@ class IndMoneyCredentialsInput(BaseModel):
     access_token: str  # Bearer token from indstocks.com/app/api-trading
 
 
-BROKER_CHOICES = ("kotak_neo", "dhan", "alice_blue", "indmoney")
+class DeltaCredentialsInput(BaseModel):
+    api_key: str       # API Key from Delta Exchange dashboard
+    api_secret: str    # API Secret from Delta Exchange dashboard
+    environment: str = "india_prod"  # india_prod | global_prod | india_testnet | global_testnet
+
+
+BROKER_CHOICES = ("kotak_neo", "dhan", "alice_blue", "indmoney", "delta_exchange")
 
 
 class KotakStatus(BaseModel):

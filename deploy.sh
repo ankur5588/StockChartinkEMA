@@ -205,7 +205,7 @@ sudo -u "$APP_USER" bash -lc "
     pip install -r '$APP_DIR/backend/requirements.txt'
     # SDKs not in requirements.txt (version pin conflicts)
     pip install 'git+https://github.com/Kotak-Neo/kotak-neo-api.git'
-    pip install dhanhq pya3 yfinance
+    pip install dhanhq pya3 yfinance delta-rest-client
 "
 ok "Python deps installed"
 
