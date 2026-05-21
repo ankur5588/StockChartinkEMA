@@ -59,6 +59,25 @@ from security import decrypt_dict, encrypt_dict
 TICK_SIZE = 0.05
 
 
+def _get_tick_size(exchange_segment: str, symbol: str = "") -> float:
+    """Return the tick size for the given exchange segment and symbol.
+
+    Exchange segments use different tick sizes:
+      - NSE/BSE cash (cm, eq): ₹0.05
+      - NSE/BSE F&O (fo, fno): ₹0.05 for most symbols, ₹0.10 for BANKNIFTY
+      - Currency derivatives (cde/cds): ₹0.0025
+      - CRYPTO: ₹0.01
+    """
+    seg = (exchange_segment or "").strip().lower()
+    sym = symbol.upper().strip()
+    if "crypto" in seg:
+        return 0.01
+    if any(s in seg for s in ("fo", "fno", "derivatives", "nfo", "bfo")):
+        if "BANKNIFTY" in sym:
+            return 0.10
+    return 0.05
+
+
 def round_to_tick(price: float, tick: float = TICK_SIZE) -> float:
     """Round `price` down to the nearest multiple of `tick`.
 
@@ -1415,10 +1434,11 @@ def _place_ema_sl_for(user_id: str, broker: str, symbol: str, quantity: int,
     if ema is None:
         return (None, None, "EMA10: skipped (no historical data)")
 
-    trigger_price = round_to_tick(ema)
-    limit_price = round_to_tick(ema * 0.995)
+    tick = _get_tick_size(exchange_segment, symbol)
+    trigger_price = round_to_tick(ema, tick)
+    limit_price = round_to_tick(ema * 0.995, tick)
     if limit_price >= trigger_price:
-        limit_price = round_to_tick(trigger_price - TICK_SIZE)
+        limit_price = round_to_tick(trigger_price - tick, tick)
     try:
         if broker == "kotak_neo":
             resp = kotak_client.place_order(
@@ -1611,8 +1631,9 @@ async def ema_preview(symbol: str, exchange_segment: str = "nse_cm"):
     """Return the latest EMA10 for a symbol — used by the manual order UI
     to preview the stoploss trigger before placing the order."""
     ema = compute_ema10(symbol, exchange_segment)
-    trigger = round_to_tick(ema) if ema else None
-    sl_limit = round_to_tick(ema * 0.995) if ema else None
+    tick = _get_tick_size(exchange_segment, symbol)
+    trigger = round_to_tick(ema, tick) if ema else None
+    sl_limit = round_to_tick(ema * 0.995, tick) if ema else None
     return {"symbol": symbol.upper(), "exchange_segment": exchange_segment,
             "ema10": ema, "sl_trigger": trigger,
             "sl_limit": sl_limit}
@@ -1668,7 +1689,8 @@ async def _run_ema_sl_for_user(user_id: str, connected: Optional[dict] = None) -
             continue  # Only long positions
         sym = pos["symbol"]
         broker = pos.get("broker", "kotak_neo")
-        ema = compute_ema10(sym, pos.get("exchange_segment", "nse_cm"))
+        seg = pos.get("exchange_segment", "nse_cm")
+        ema = compute_ema10(sym, seg)
         run = EmaSlRun(
             user_id=user_id,
             symbol=f"{sym} [{broker}]",
@@ -1682,10 +1704,11 @@ async def _run_ema_sl_for_user(user_id: str, connected: Optional[dict] = None) -
             run.message = "Could not fetch historical data for EMA10"
         else:
             try:
-                trigger_price = round_to_tick(ema)
-                limit_price = round_to_tick(ema * 0.995)
+                tick = _get_tick_size(seg, sym)
+                trigger_price = round_to_tick(ema, tick)
+                limit_price = round_to_tick(ema * 0.995, tick)
                 if limit_price >= trigger_price:
-                    limit_price = round_to_tick(trigger_price - TICK_SIZE)
+                    limit_price = round_to_tick(trigger_price - tick, tick)
                 if broker == "kotak_neo":
                     resp = kotak_client.place_order(
                         user_id=user_id,
