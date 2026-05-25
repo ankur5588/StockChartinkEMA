@@ -1781,15 +1781,25 @@ async def _run_ema_sl_for_user(user_id: str, connected: Optional[dict] = None) -
                         )
                         run.order_id = (resp or {}).get("nOrdNo") or (resp or {}).get("orderId")
                     elif broker == "dhan":
+                        # Delivery holdings (source="holding") use LIMIT instead of
+                        # STOP_LOSS because Dhan rejects SL orders for CNC delivery.
+                        is_holding = pos.get("source") == "holding"
+                        # Delivery holdings: use SL-M (stop loss market) since Dhan
+                        # rejects STOP_LOSS (limit) orders for CNC/delivery products.
+                        dhan_ot = "SL-M" if is_holding else "SL"
+                        dhan_price = 0 if is_holding else limit_price
+                        dhan_trigger = trigger_price
+                        msg_suffix = "SL-M" if is_holding else "SL"
                         resp = dhan_client.place_order(
                             user_id=user_id, symbol=sym,
                             transaction_type="S", quantity=pos["quantity"],
-                            order_type="SL", product=pos.get("product") or "CNC",
+                            order_type=dhan_ot, product=pos.get("product") or "CNC",
                             exchange_segment=pos.get("exchange_segment", "NSE_EQ"),
-                            price=limit_price, trigger_price=trigger_price,
+                            price=dhan_price, trigger_price=dhan_trigger,
                             security_id=pos.get("security_id"),
                         )
                         run.order_id = resp.get("order_id")
+                        run.message = f"Placed {msg_suffix} at trigger {trigger_price} on {broker}" 
                     elif broker == "alice_blue":
                         resp = alice_client.place_order(
                             user_id=user_id, symbol=sym,
@@ -1819,7 +1829,8 @@ async def _run_ema_sl_for_user(user_id: str, connected: Optional[dict] = None) -
                         run.order_id = resp.get("order_id")
                     if run.status != "updated":
                         run.status = "placed"
-                        run.message = f"SL placed at {trigger_price} (limit {limit_price}) on {broker}"
+                        if not run.message:
+                            run.message = f"SL placed at {trigger_price} (limit {limit_price}) on {broker}"
             except (kotak_client.KotakError, dhan_client.DhanError, alice_client.AliceError, indmoney_client.IndMoneyError, delta_client.DeltaError) as e:
                 run.status = "error"
                 run.message = str(e)
