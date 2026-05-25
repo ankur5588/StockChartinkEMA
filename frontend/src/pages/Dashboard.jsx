@@ -4,14 +4,18 @@ import LiveBanner from "@/components/layout/LiveBanner";
 import ConnectionCard from "@/components/dashboard/ConnectionCard";
 import DhanCard from "@/components/dashboard/DhanCard";
 import AliceBlueCard from "@/components/dashboard/AliceBlueCard";
+import INDmoneyCard from "@/components/dashboard/INDmoneyCard";
+import DeltaCard from "@/components/dashboard/DeltaCard";
 import WebhookCard from "@/components/dashboard/WebhookCard";
 import EmaPanel from "@/components/dashboard/EmaPanel";
 import AlertsConfig from "@/components/dashboard/AlertsConfig";
+import BacktestPanel from "@/components/dashboard/BacktestPanel";
 import PositionsTable from "@/components/dashboard/PositionsTable";
 import TradeLog from "@/components/dashboard/TradeLog";
 import WebhookLog from "@/components/dashboard/WebhookLog";
 import ComplianceCard from "@/components/dashboard/ComplianceCard";
-import SymbolMappings from "@/components/dashboard/SymbolMappings";
+import ManualOrderCard from "@/components/dashboard/ManualOrderCard";
+import PortfolioRiskCard from "@/components/dashboard/PortfolioRiskCard";
 import { api } from "@/lib/api";
 
 export default function Dashboard({ user }) {
@@ -44,7 +48,9 @@ export default function Dashboard({ user }) {
   const anyAuth =
     !!status?.kotak_neo?.is_authenticated ||
     !!status?.dhan?.is_authenticated ||
-    !!status?.alice_blue?.is_authenticated;
+    !!status?.alice_blue?.is_authenticated ||
+    !!status?.indmoney?.is_authenticated ||
+    !!status?.delta_exchange?.is_authenticated;
 
   return (
     <div
@@ -74,10 +80,12 @@ export default function Dashboard({ user }) {
           <div className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground font-semibold mb-3">
             / brokers
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
             <ConnectionCard status={kotakStatus} reload={loadStatus} />
             <DhanCard status={status?.dhan} reload={loadStatus} />
             <AliceBlueCard status={status?.alice_blue} reload={loadStatus} />
+            <INDmoneyCard status={status?.indmoney} reload={loadStatus} />
+            <DeltaCard status={status?.delta_exchange} reload={loadStatus} />
           </div>
         </section>
 
@@ -96,8 +104,14 @@ export default function Dashboard({ user }) {
           <AlertsConfig />
         </div>
 
-        {/* Symbol Mappings (full-width) */}
-        <SymbolMappings />
+        {/* Portfolio Risk (full-width) */}
+        <PortfolioRiskCard anyAuthenticated={anyAuth} />
+
+        {/* Manual Order */}
+        <ManualOrderCard brokersStatus={status} reload={loadStatus} />
+
+        {/* Backtest (full-width) */}
+        <BacktestPanel />
 
         {/* Logs */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

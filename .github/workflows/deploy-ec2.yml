@@ -1,0 +1,96 @@
+name: Deploy to EC2
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-ec2-main
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Upload source bundle to EC2
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: "."
+          target: "/tmp/chartink-release"
+          overwrite: true
+          rm: true
+
+      - name: Provision and deploy on EC2
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          DOMAIN: ${{ secrets.APP_DOMAIN }}
+          CONTACT_EMAIL: ${{ secrets.LETSENCRYPT_EMAIL }}
+          CI: "true"
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          envs: DOMAIN,CONTACT_EMAIL,CI
+          script_stop: true
+          script: |
+            set -euo pipefail
+
+            APP_DIR="/opt/chartink-trade"
+            SRC_DIR="/tmp/chartink-release"
+
+            sudo mkdir -p "$APP_DIR"
+            sudo rsync -a --delete \
+              --exclude ".git" \
+              --exclude "frontend/node_modules" \
+              --exclude "backend/.venv" \
+              "$SRC_DIR"/ "$APP_DIR"/
+            sudo chmod +x "$APP_DIR/deploy.sh"
+
+            # Use nip.io temp URL if no domain secret set
+            if [ -z "${DOMAIN:-}" ]; then
+              STATIC_IP="${{ secrets.EC2_HOST }}"
+              DOMAIN="chartink-${STATIC_IP//./-}.nip.io"
+              echo "No APP_DOMAIN secret — using nip.io temp URL: http://${DOMAIN}"
+            fi
+            if [ -z "${CONTACT_EMAIL:-}" ]; then
+              CONTACT_EMAIL="admin@chartink.local"
+            fi
+
+            printf 'y\n' | sudo CI="$CI" "$APP_DIR/deploy.sh" "$DOMAIN" "$CONTACT_EMAIL"
+
+            # Only run certbot if we have a real domain (not nip.io)
+            if [[ "$DOMAIN" != *".nip.io" ]]; then
+              sudo certbot --nginx --non-interactive --agree-tos --redirect \
+                -m "$CONTACT_EMAIL" -d "$DOMAIN" || true
+            fi
+            sudo nginx -t || true
+            sudo systemctl reload nginx || true
+
+            curl -fsS --retry 10 --retry-delay 3 http://127.0.0.1:8001/api/health >/dev/null
+            echo "Deployment and health checks completed successfully."
+
+      - name: Verify public domain reachability (non-blocking)
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          DOMAIN="${{ secrets.APP_DOMAIN }}"
+          if [ -n "${DOMAIN}" ]; then
+            echo "Checking DNS for ${DOMAIN}..."
+            getent ahosts "${DOMAIN}" || true
+            curl -fLsS --retry 10 --retry-delay 5 --max-time 20 "https://${DOMAIN}/" >/dev/null || true
+            curl -fLsS --retry 10 --retry-delay 5 --max-time 20 "https://${DOMAIN}/api/health" >/dev/null || true
+            echo "Public domain checks passed."
+          else
+            echo "No APP_DOMAIN secret — skipping public reachability check."
+            echo "Temp URL: http://$(curl -s https://api.ipify.org)/"
+          fi

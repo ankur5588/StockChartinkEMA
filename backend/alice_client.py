@@ -84,7 +84,7 @@ def get_positions(user_id: str) -> list:
             qty = int(float(p.get("netqty") or p.get("Netqty") or p.get("Nqty") or 0))
         except Exception:
             qty = 0
-        sym = p.get("Tsym") or p.get("tsym") or p.get("Trsym") or p.get("symbol")
+        sym = (p.get("Tsym") or p.get("tsym") or p.get("Trsym") or p.get("symbol") or "UNKNOWN").upper()
         try:
             avg = float(p.get("NetAvgPrc") or p.get("avgnetprice") or p.get("BuyAvgPrc") or 0)
         except Exception:
@@ -116,6 +116,7 @@ def place_order(
     exchange: str = "NSE",
     price: float = 0,
     trigger_price: float = 0,
+    amo: bool = False,
 ) -> dict:
     alice = _get(user_id)
     try:
@@ -142,7 +143,7 @@ def place_order(
             stop_loss=None,
             square_off=None,
             trailing_sl=None,
-            is_amo=False,
+            is_amo=bool(amo),
             order_tag="chartink-trade",
         )
     except Exception as e:
