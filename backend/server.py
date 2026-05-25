@@ -1827,7 +1827,15 @@ async def _run_ema_sl_for_user(user_id: str, connected: Optional[dict] = None) -
         await db.trade_logs.insert_one(tdoc)
         runs.append(run.model_dump(mode="json"))
 
-    return {"ok": True, "count": len(runs), "runs": runs, "ran_at": now_iso}
+    if len(runs) == 0:
+        auth_count = sum(1 for v in connected.values() if v) if connected else 0
+        if auth_count == 0:
+            note = "No broker session active. Visit Dashboard → broker cards and click Connect."
+        else:
+            note = "Brokers connected but no open long positions found."
+    else:
+        note = None
+    return {"ok": True, "count": len(runs), "runs": runs, "ran_at": now_iso, "note": note}
 
 
 @api.post("/ema-sl/run")
@@ -2124,6 +2132,31 @@ async def _startup():
     telegram_notifier.init()
     await auth_service.ensure_indexes(db)
     await auth_service.seed_admin(db)
+
+    # Auto-reconnect broker sessions after restart
+    _reconnect_count = 0
+    for collection, mod, builder in (
+        ("dhan_credentials", dhan_client, lambda c: (c["client_id"], c["access_token"])),
+        ("alice_credentials", alice_client, lambda c: (c["user_id"], c["api_key"])),
+        ("indmoney_credentials", indmoney_client, lambda c: (c["access_token"],)),
+        ("delta_credentials", delta_client, lambda c: (c["api_key"], c["api_secret"], c.get("environment", "india_prod"))),
+    ):
+        try:
+            async for doc in db[collection].find({}, {"_id": 0, "user_id": 1, "encrypted": 1}):
+                uid = doc["user_id"]
+                if mod.is_authenticated(uid):
+                    continue
+                try:
+                    creds = decrypt_dict(doc["encrypted"])
+                    mod.connect(uid, *builder(creds))
+                    _reconnect_count += 1
+                    logger.info("Auto-reconnected %s for user %s", collection, uid)
+                except Exception as e:
+                    logger.warning("Auto-reconnect failed for %s user %s: %s", collection, uid, e)
+        except Exception as e:
+            logger.warning("Failed to scan %s for reconnect: %s", collection, e)
+    logger.info("Reconnected %d broker session(s) on startup", _reconnect_count)
+
     _scheduler_task = asyncio.create_task(_ema_scheduler_loop())
     _tg_notif_task = asyncio.create_task(_telegram_notification_loop())
 
