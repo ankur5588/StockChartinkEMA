@@ -190,3 +190,6 @@ __pycache__/
 
 # Test reports
 test_reports/
+
+# Trading data files
+*.csv
