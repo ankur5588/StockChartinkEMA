@@ -234,33 +234,27 @@ def place_order(
     dhan_ot = ot_map.get(order_type.upper(), "MARKET")
     dhan_pt = pt_map.get(product.upper(), "CNC")
 
-    place_kwargs = dict(
-        security_id=str(sid),
-        exchange_segment=exchange_segment,
-        transaction_type=dhan_txn,
-        quantity=int(quantity),
-        order_type=dhan_ot,
-        product_type=dhan_pt,
-        price=float(price),
-        trigger_price=float(trigger_price),
-        validity="DAY",
-        disclosed_quantity=0,
-    )
-    if amo:
-        # dhanhq exposes after_market_order=True; pass leniently in case
-        # older versions don't accept it
-        place_kwargs["after_market_order"] = True
+    # SDK place_order is missing amoTime and sends null for BO fields,
+    # which Dhan v2 API rejects (DH-905). Build payload directly.
+    payload = {
+        "transactionType": dhan_txn,
+        "exchangeSegment": exchange_segment,
+        "productType": dhan_pt,
+        "orderType": dhan_ot,
+        "validity": "DAY",
+        "securityId": str(sid),
+        "quantity": int(quantity),
+        "disclosedQuantity": 0,
+        "price": float(price) if dhan_ot in ("LIMIT", "STOP_LOSS") else "",
+        "triggerPrice": float(trigger_price),
+        "afterMarketOrder": amo,
+        "amoTime": "OPEN" if amo else "",
+        "boProfitValue": None,
+        "boStopLossValue": None,
+    }
 
     try:
-        resp = client.place_order(**place_kwargs)
-    except TypeError:
-        # dhanhq SDK without AMO support → retry without the AMO flag
-        place_kwargs.pop("after_market_order", None)
-        try:
-            resp = client.place_order(**place_kwargs)
-        except Exception as e:
-            _invalidate_on_auth_error(user_id, e)
-            raise DhanError(f"place_order failed: {e}")
+        resp = client.dhan_http.post("/orders", payload)
     except Exception as e:
         _invalidate_on_auth_error(user_id, e)
         raise DhanError(f"place_order failed: {e}")
@@ -271,7 +265,8 @@ def place_order(
 
     order_id = None
     if isinstance(resp, dict):
-        order_id = resp.get("orderId") or (resp.get("data") or {}).get("orderId")
+        data = resp.get("data") or {}
+        order_id = data.get("orderId") if isinstance(data, dict) else None
     return {"ok": True, "order_id": order_id, "response": _clean(resp)}
 
 

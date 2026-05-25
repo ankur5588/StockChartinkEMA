@@ -1770,9 +1770,11 @@ async def _run_ema_sl_for_user(user_id: str, connected: Optional[dict] = None) -
                     # Use SL-M for delivery holdings (many brokers reject SL for CNC).
                     # Pass amo=True so orders queue after market hours.
                     is_holding = pos.get("source") == "holding"
-                    ot = "SL-M" if is_holding else "SL"
-                    order_price = 0 if is_holding else limit_price
-                    msg_type = "SL-M" if is_holding else "SL"
+                    # Dhan does not accept SL-M for CNC; use SL with limit price.
+                    use_slm = is_holding and broker != "dhan"
+                    ot = "SL-M" if use_slm else "SL"
+                    order_price = 0 if use_slm else limit_price
+                    msg_type = "SL-M" if use_slm else "SL"
 
                     if broker == "kotak_neo":
                         resp = kotak_client.place_order(
@@ -1917,7 +1919,7 @@ async def set_ema_schedule(payload: EmaScheduleInput, user: User = Depends(requi
             "user_id": user.user_id,
             "interval": interval,
             "enabled": payload.enabled,
-            "next_run_at": next_run.isoformat(),
+            "next_run_at": next_run,
             "created_at": now.isoformat(),
         }},
         upsert=True,
@@ -1988,7 +1990,7 @@ async def _ema_scheduler_loop():
     while True:
         try:
             now = datetime.now(timezone.utc)
-            cursor = db.ema_schedules.find({"enabled": True, "next_run_at": {"$lte": now.isoformat()}}, {"_id": 0})
+            cursor = db.ema_schedules.find({"enabled": True, "next_run_at": {"$lte": now}}, {"_id": 0})
             schedules = [s async for s in cursor]
             for sched in schedules:
                 uid = sched["user_id"]
@@ -2002,7 +2004,7 @@ async def _ema_scheduler_loop():
                 await db.ema_schedules.update_one(
                     {"user_id": uid},
                     {"$set": {"last_run_at": datetime.now(timezone.utc).isoformat(),
-                               "next_run_at": nxt.isoformat()}},
+                               "next_run_at": nxt}},
                 )
         except Exception as e:
             logger.error("[scheduler] loop error: %s", e)
