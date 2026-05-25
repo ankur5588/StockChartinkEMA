@@ -131,6 +131,7 @@ def place_order(
     exchange_segment: str = "NSE",
     price: float = 0,
     trigger_price: float = 0,
+    amo: bool = False,
 ) -> dict:
     token = _get(user_id)
     txn = "BUY" if transaction_type.upper() in ("B", "BUY") else "SELL"
@@ -152,6 +153,8 @@ def place_order(
         "price": float(price),
         "trigger_price": float(trigger_price),
     }
+    if amo:
+        payload["is_amo"] = True
     try:
         r = requests.post(f"{_BASE_URL}/order/place",
                           headers=_headers(token), json=payload, timeout=15)

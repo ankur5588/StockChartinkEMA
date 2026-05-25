@@ -484,10 +484,18 @@ async def dhan_delete_credentials(user: User = Depends(require_user)):
 @api.get("/dhan/status")
 async def dhan_status(user: User = Depends(require_user)):
     doc = await db.dhan_credentials.find_one({"user_id": user.user_id}, {"_id": 0})
+    client_id = None
+    if doc and "encrypted" in doc:
+        try:
+            creds = decrypt_dict(doc["encrypted"])
+            client_id = creds.get("client_id")
+        except Exception:
+            pass
     return {
         "has_credentials": bool(doc),
         "is_authenticated": dhan_client.is_authenticated(user.user_id),
         "last_login_at": (doc or {}).get("last_login_at"),
+        "client_id": client_id,
     }
 
 
@@ -1667,16 +1675,28 @@ async def _run_ema_sl_for_user(user_id: str, connected: Optional[dict] = None) -
             all_positions.extend(_normalise_positions(kotak_client.get_positions(user_id)))
         except Exception as e:
             logger.warning("kotak positions fetch failed: %s", e)
+        try:
+            all_positions.extend(_normalise_positions(kotak_client.get_holdings(user_id)))
+        except Exception as e:
+            logger.warning("kotak holdings fetch failed: %s", e)
     if connected.get("dhan"):
         try:
             all_positions.extend(dhan_client.get_positions(user_id))
         except Exception as e:
             logger.warning("dhan positions fetch failed: %s", e)
+        try:
+            all_positions.extend(dhan_client.get_holdings(user_id))
+        except Exception as e:
+            logger.warning("dhan holdings fetch failed: %s", e)
     if connected.get("alice_blue"):
         try:
             all_positions.extend(alice_client.get_positions(user_id))
         except Exception as e:
             logger.warning("alice positions fetch failed: %s", e)
+        try:
+            all_positions.extend(alice_client.get_holdings(user_id))
+        except Exception as e:
+            logger.warning("alice holdings fetch failed: %s", e)
     if connected.get("indmoney"):
         try:
             all_positions.extend(indmoney_client.get_positions(user_id))
@@ -1747,36 +1767,48 @@ async def _run_ema_sl_for_user(user_id: str, connected: Optional[dict] = None) -
                         existing = None  # fall through to place new order for other brokers
 
                 if not existing or not existing.get("order_id"):
+                    # Use SL-M for delivery holdings (many brokers reject SL for CNC).
+                    # Pass amo=True so orders queue after market hours.
+                    is_holding = pos.get("source") == "holding"
+                    # Dhan does not accept SL-M for CNC; use SL with limit price.
+                    use_slm = is_holding and broker != "dhan"
+                    ot = "SL-M" if use_slm else "SL"
+                    order_price = 0 if use_slm else limit_price
+                    msg_type = "SL-M" if use_slm else "SL"
+
                     if broker == "kotak_neo":
                         resp = kotak_client.place_order(
                             user_id=user_id,
                             trading_symbol=sym,
                             transaction_type="S",
                             quantity=pos["quantity"],
-                            order_type="SL",
+                            order_type=ot,
                             product=pos.get("product") or "CNC",
                             exchange_segment=pos.get("exchange_segment", "nse_cm"),
-                            price=str(limit_price),
+                            price=str(order_price),
                             trigger_price=str(trigger_price),
+                            amo=True,
                         )
                         run.order_id = (resp or {}).get("nOrdNo") or (resp or {}).get("orderId")
                     elif broker == "dhan":
                         resp = dhan_client.place_order(
                             user_id=user_id, symbol=sym,
                             transaction_type="S", quantity=pos["quantity"],
-                            order_type="SL", product=pos.get("product") or "CNC",
+                            order_type=ot, product=pos.get("product") or "CNC",
                             exchange_segment=pos.get("exchange_segment", "NSE_EQ"),
-                            price=limit_price, trigger_price=trigger_price,
+                            price=order_price, trigger_price=trigger_price,
                             security_id=pos.get("security_id"),
+                            amo=True,
                         )
                         run.order_id = resp.get("order_id")
                     elif broker == "alice_blue":
                         resp = alice_client.place_order(
                             user_id=user_id, symbol=sym,
                             transaction_type="S", quantity=pos["quantity"],
-                            order_type="SL", product=pos.get("product") or "CNC",
+                            order_type=ot, product=pos.get("product") or "CNC",
                             exchange=("NSE" if str(pos.get("exchange_segment", "NSE")).upper().startswith("NSE") else "BSE"),
-                            price=limit_price, trigger_price=trigger_price,
+                            price=order_price, trigger_price=trigger_price,
+                            amo=True,
                         )
                         run.order_id = resp.get("order_id")
                     elif broker == "indmoney":
@@ -1786,20 +1818,22 @@ async def _run_ema_sl_for_user(user_id: str, connected: Optional[dict] = None) -
                             order_type="SL", product=pos.get("product") or "CNC",
                             exchange_segment=("NSE" if str(pos.get("exchange_segment", "NSE")).upper().startswith("NSE") else "BSE"),
                             price=limit_price, trigger_price=trigger_price,
+                            amo=True,
                         )
                         run.order_id = resp.get("order_id")
                     elif broker == "delta_exchange":
                         resp = delta_client.place_order(
                             user_id=user_id, symbol=sym,
                             transaction_type="S", quantity=pos["quantity"],
-                            order_type="SL", product=pos.get("product") or "CNC",
+                            order_type=ot, product=pos.get("product") or "CNC",
                             exchange_segment="CRYPTO",
-                            price=limit_price, trigger_price=trigger_price,
+                            price=order_price, trigger_price=trigger_price,
+                            amo=True,
                         )
                         run.order_id = resp.get("order_id")
+                    run.message = f"Placed {msg_type} at trigger {trigger_price} on {broker}"
                     if run.status != "updated":
                         run.status = "placed"
-                        run.message = f"SL placed at {trigger_price} (limit {limit_price}) on {broker}"
             except (kotak_client.KotakError, dhan_client.DhanError, alice_client.AliceError, indmoney_client.IndMoneyError, delta_client.DeltaError) as e:
                 run.status = "error"
                 run.message = str(e)
@@ -1885,7 +1919,7 @@ async def set_ema_schedule(payload: EmaScheduleInput, user: User = Depends(requi
             "user_id": user.user_id,
             "interval": interval,
             "enabled": payload.enabled,
-            "next_run_at": next_run.isoformat(),
+            "next_run_at": next_run,
             "created_at": now.isoformat(),
         }},
         upsert=True,
@@ -1956,7 +1990,7 @@ async def _ema_scheduler_loop():
     while True:
         try:
             now = datetime.now(timezone.utc)
-            cursor = db.ema_schedules.find({"enabled": True, "next_run_at": {"$lte": now.isoformat()}}, {"_id": 0})
+            cursor = db.ema_schedules.find({"enabled": True, "next_run_at": {"$lte": now}}, {"_id": 0})
             schedules = [s async for s in cursor]
             for sched in schedules:
                 uid = sched["user_id"]
@@ -1970,7 +2004,7 @@ async def _ema_scheduler_loop():
                 await db.ema_schedules.update_one(
                     {"user_id": uid},
                     {"$set": {"last_run_at": datetime.now(timezone.utc).isoformat(),
-                               "next_run_at": nxt.isoformat()}},
+                               "next_run_at": nxt}},
                 )
         except Exception as e:
             logger.error("[scheduler] loop error: %s", e)

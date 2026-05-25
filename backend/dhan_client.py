@@ -168,6 +168,40 @@ def get_positions(user_id: str) -> list:
     return [o for o in out if o["quantity"] != 0]
 
 
+def get_holdings(user_id: str) -> list:
+    """Return delivery holdings (CNC long positions) from Dhan.
+
+    Holdings represent shares held in the demat account (delivery),
+    as opposed to get_positions() which returns intraday open positions.
+    """
+    client = _get(user_id)
+    try:
+        resp = client.get_holdings()
+    except Exception as e:
+        _invalidate_on_auth_error(user_id, e)
+        raise DhanError(f"get_holdings failed: {e}")
+    data = resp.get("data") if isinstance(resp, dict) else resp
+    holdings = data if isinstance(data, list) else []
+    out = []
+    for h in holdings:
+        qty = int(h.get("totalQty") or h.get("availableQty") or h.get("dpQty") or 0)
+        if qty <= 0:
+            continue
+        out.append({
+            "broker": "dhan",
+            "symbol": (h.get("tradingSymbol") or h.get("trading_symbol") or "UNKNOWN").upper(),
+            "exchange_segment": "NSE_EQ",
+            "security_id": h.get("securityId") or h.get("security_id"),
+            "quantity": qty,
+            "avg_price": float(h.get("avgCostPrice") or h.get("costPrice") or 0),
+            "ltp": float(h.get("lastTradedPrice") or h.get("ltp") or 0) or None,
+            "pnl": None,
+            "product": "CNC",
+            "source": "holding",
+        })
+    return out
+
+
 def place_order(
     user_id: str,
     symbol: str,
@@ -200,33 +234,27 @@ def place_order(
     dhan_ot = ot_map.get(order_type.upper(), "MARKET")
     dhan_pt = pt_map.get(product.upper(), "CNC")
 
-    place_kwargs = dict(
-        security_id=str(sid),
-        exchange_segment=exchange_segment,
-        transaction_type=dhan_txn,
-        quantity=int(quantity),
-        order_type=dhan_ot,
-        product_type=dhan_pt,
-        price=float(price),
-        trigger_price=float(trigger_price),
-        validity="DAY",
-        disclosed_quantity=0,
-    )
-    if amo:
-        # dhanhq exposes after_market_order=True; pass leniently in case
-        # older versions don't accept it
-        place_kwargs["after_market_order"] = True
+    # SDK place_order is missing amoTime and sends null for BO fields,
+    # which Dhan v2 API rejects (DH-905). Build payload directly.
+    payload = {
+        "transactionType": dhan_txn,
+        "exchangeSegment": exchange_segment,
+        "productType": dhan_pt,
+        "orderType": dhan_ot,
+        "validity": "DAY",
+        "securityId": str(sid),
+        "quantity": int(quantity),
+        "disclosedQuantity": 0,
+        "price": float(price) if dhan_ot in ("LIMIT", "STOP_LOSS") else "",
+        "triggerPrice": float(trigger_price),
+        "afterMarketOrder": amo,
+        "amoTime": "OPEN" if amo else "",
+        "boProfitValue": None,
+        "boStopLossValue": None,
+    }
 
     try:
-        resp = client.place_order(**place_kwargs)
-    except TypeError:
-        # dhanhq SDK without AMO support → retry without the AMO flag
-        place_kwargs.pop("after_market_order", None)
-        try:
-            resp = client.place_order(**place_kwargs)
-        except Exception as e:
-            _invalidate_on_auth_error(user_id, e)
-            raise DhanError(f"place_order failed: {e}")
+        resp = client.dhan_http.post("/orders", payload)
     except Exception as e:
         _invalidate_on_auth_error(user_id, e)
         raise DhanError(f"place_order failed: {e}")
@@ -237,7 +265,8 @@ def place_order(
 
     order_id = None
     if isinstance(resp, dict):
-        order_id = resp.get("orderId") or (resp.get("data") or {}).get("orderId")
+        data = resp.get("data") or {}
+        order_id = data.get("orderId") if isinstance(data, dict) else None
     return {"ok": True, "order_id": order_id, "response": _clean(resp)}
 
 
