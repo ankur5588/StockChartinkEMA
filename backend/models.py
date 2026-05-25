@@ -41,7 +41,13 @@ class IndMoneyCredentialsInput(BaseModel):
     access_token: str  # Bearer token from indstocks.com/app/api-trading
 
 
-BROKER_CHOICES = ("kotak_neo", "dhan", "alice_blue", "indmoney")
+class DeltaCredentialsInput(BaseModel):
+    api_key: str       # API Key from Delta Exchange dashboard
+    api_secret: str    # API Secret from Delta Exchange dashboard
+    environment: str = "india_prod"  # india_prod | global_prod | india_testnet | global_testnet
+
+
+BROKER_CHOICES = ("kotak_neo", "dhan", "alice_blue", "indmoney", "delta_exchange")
 
 
 class KotakStatus(BaseModel):
@@ -75,11 +81,37 @@ class SymbolMappingInput(BaseModel):
     broker: str = "*"     # "*" = any broker; specific broker overrides "*"
     transaction_type: Optional[str] = None  # B / S (overrides alert config if set)
     product: Optional[str] = None           # CNC / MIS / NRML (overrides if set)
+    category: Optional[str] = None          # "large_cap" | "mid_cap" | "small_cap" for amount grouping
 
 
 class SymbolMapping(SymbolMappingInput):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     user_id: str
+    created_at: datetime = Field(default_factory=_now)
+
+
+CATEGORIES = ("large_cap", "mid_cap", "small_cap", "other")
+
+
+class CategoryAmountInput(BaseModel):
+    category: str  # large_cap | mid_cap | small_cap | other
+    amount: float  # rupee value used to auto-calc qty = floor(amount / trigger_price)
+
+
+class CategoryAmount(CategoryAmountInput):
+    user_id: str
+    created_at: datetime = Field(default_factory=_now)
+
+
+class EmaScheduleInput(BaseModel):
+    interval: str  # "1h" | "2h" | "daily"
+    enabled: bool = True
+
+
+class EmaSchedule(EmaScheduleInput):
+    user_id: str
+    last_run_at: Optional[datetime] = None
+    next_run_at: Optional[datetime] = None
     created_at: datetime = Field(default_factory=_now)
 
 

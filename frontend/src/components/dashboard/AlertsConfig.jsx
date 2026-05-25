@@ -121,6 +121,7 @@ export default function AlertsConfig() {
                 <SelectItem value="dhan">Dhan</SelectItem>
                 <SelectItem value="alice_blue">Alice</SelectItem>
                 <SelectItem value="indmoney">INDmoney</SelectItem>
+                <SelectItem value="delta_exchange">Delta</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -216,7 +217,7 @@ export default function AlertsConfig() {
                   {a.alert_name}
                 </span>
                 <span className="font-mono text-[10px] px-1.5 py-0.5 rounded-sm border border-border bg-surface-1 text-muted-foreground uppercase tracking-wider">
-                  {a.broker === "kotak_neo" ? "Kotak" : a.broker === "dhan" ? "Dhan" : a.broker === "alice_blue" ? "Alice" : a.broker === "indmoney" ? "INDmoney" : (a.broker || "—")}
+                  {a.broker === "kotak_neo" ? "Kotak" : a.broker === "dhan" ? "Dhan" : a.broker === "alice_blue" ? "Alice" : a.broker === "indmoney" ? "INDmoney" : a.broker === "delta_exchange" ? "Delta" : (a.broker || "—")}
                 </span>
                 <span
                   className={`font-mono text-[10px] px-2 py-0.5 rounded-sm border ${

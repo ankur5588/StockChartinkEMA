@@ -37,6 +37,9 @@ _sessions: Dict[str, Any] = {}          # {user_id: dhanhq instance}
 _symbol_map: Dict[str, str] = {}        # {"NSE:RELIANCE": "2885"}
 _map_loaded: bool = False
 
+# Auth error notifications queued for delivery (telegram_notifier processes these)
+_pending_auth_notifications: list[tuple[str, str]] = []  # [(user_id, message)]
+
 
 def _ensure_sdk():
     if DhanSDK is None:
@@ -103,6 +106,23 @@ def disconnect(user_id: str) -> None:
     _sessions.pop(user_id, None)
 
 
+_AUTH_ERROR_INDICATORS = ("DH-901", "Invalid_Authentication", "access token is invalid", "access token invalid")
+
+
+def _invalidate_on_auth_error(user_id: str, result) -> bool:
+    """If a Dhan response/exception indicates an expired token, disconnect
+    the user so subsequent calls skip instead of failing."""
+    if result is None:
+        return False
+    msg = str(result.get("remarks") if isinstance(result, dict) else result)
+    if any(ind in msg for ind in _AUTH_ERROR_INDICATORS):
+        _sessions.pop(user_id, None)
+        logger.warning("Dhan auth error detected for user %s — disconnected session", user_id)
+        _pending_auth_notifications.append((user_id, msg))
+        return True
+    return False
+
+
 def _get(user_id: str):
     c = _sessions.get(user_id)
     if not c:
@@ -127,6 +147,7 @@ def get_positions(user_id: str) -> list:
     try:
         resp = client.get_positions()
     except Exception as e:
+        _invalidate_on_auth_error(user_id, e)
         raise DhanError(f"get_positions failed: {e}")
     data = resp.get("data") if isinstance(resp, dict) else resp
     positions = data if isinstance(data, list) else []
@@ -135,7 +156,7 @@ def get_positions(user_id: str) -> list:
         qty = int(p.get("netQty") or p.get("quantity") or 0)
         out.append({
             "broker": "dhan",
-            "symbol": p.get("tradingSymbol") or p.get("trading_symbol"),
+            "symbol": (p.get("tradingSymbol") or p.get("trading_symbol") or "UNKNOWN").upper(),
             "exchange_segment": p.get("exchangeSegment") or p.get("exchange_segment") or "NSE_EQ",
             "security_id": p.get("securityId") or p.get("security_id"),
             "quantity": qty,
@@ -204,16 +225,74 @@ def place_order(
         try:
             resp = client.place_order(**place_kwargs)
         except Exception as e:
+            _invalidate_on_auth_error(user_id, e)
             raise DhanError(f"place_order failed: {e}")
     except Exception as e:
+        _invalidate_on_auth_error(user_id, e)
         raise DhanError(f"place_order failed: {e}")
 
     if isinstance(resp, dict) and resp.get("status") == "failure":
+        _invalidate_on_auth_error(user_id, resp)
         raise DhanError(resp.get("remarks") or "Dhan order rejected")
 
     order_id = None
     if isinstance(resp, dict):
         order_id = resp.get("orderId") or (resp.get("data") or {}).get("orderId")
+    return {"ok": True, "order_id": order_id, "response": _clean(resp)}
+
+
+def get_open_orders(user_id: str) -> list:
+    client = _get(user_id)
+    try:
+        resp = client.get_order_list()
+    except Exception as e:
+        _invalidate_on_auth_error(user_id, e)
+        raise DhanError(f"get_order_list failed: {e}")
+    data = resp.get("data") if isinstance(resp, dict) else resp
+    orders = data if isinstance(data, list) else []
+    out = []
+    for o in orders:
+        qty = int(o.get("quantity") or o.get("netQty") or 0)
+        out.append({
+            "order_id": o.get("orderId") or o.get("dhanOrderId"),
+            "symbol": (o.get("tradingSymbol") or o.get("trading_symbol") or "").upper(),
+            "order_type": o.get("orderType") or "",
+            "status": o.get("orderStatus") or "",
+            "trigger_price": float(o.get("triggerPrice") or 0),
+            "price": float(o.get("price") or 0),
+            "quantity": qty,
+            "filled_qty": int(o.get("filledQty") or 0),
+            "exchange_segment": o.get("exchangeSegment") or o.get("exchange_segment") or "NSE_EQ",
+            "security_id": o.get("securityId") or o.get("security_id"),
+        })
+    return out
+
+
+def modify_sl_order(
+    user_id: str,
+    order_id: str,
+    new_trigger_price: float,
+    new_limit_price: float,
+    quantity: int,
+) -> dict:
+    client = _get(user_id)
+    try:
+        resp = client.modify_order(
+            order_id=order_id,
+            order_type="STOP_LOSS",
+            leg_name="ENTRY",
+            quantity=int(quantity),
+            price=float(new_limit_price),
+            trigger_price=float(new_trigger_price),
+            disclosed_quantity=0,
+            validity="DAY",
+        )
+    except Exception as e:
+        _invalidate_on_auth_error(user_id, e)
+        raise DhanError(f"modify_order failed: {e}")
+    if isinstance(resp, dict) and resp.get("status") == "failure":
+        _invalidate_on_auth_error(user_id, resp)
+        raise DhanError(resp.get("remarks") or "Dhan modify order rejected")
     return {"ok": True, "order_id": order_id, "response": _clean(resp)}
 
 

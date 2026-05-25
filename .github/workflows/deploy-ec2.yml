@@ -64,6 +64,28 @@ jobs:
               --exclude "backend/.venv" \
               "$SRC_DIR"/ "$APP_DIR"/
             sudo chmod +x "$APP_DIR/deploy.sh"
+
+            # Use nip.io temp URL if no domain secret set
+            if [ -z "${DOMAIN:-}" ]; then
+              STATIC_IP="${{ secrets.EC2_HOST }}"
+              DOMAIN="chartink-${STATIC_IP//./-}.nip.io"
+              echo "No APP_DOMAIN secret — using nip.io temp URL: http://${DOMAIN}"
+            fi
+            if [ -z "${CONTACT_EMAIL:-}" ]; then
+              CONTACT_EMAIL="admin@chartink.local"
+            fi
+
+            printf 'y\n' | sudo CI="$CI" "$APP_DIR/deploy.sh" "$DOMAIN" "$CONTACT_EMAIL"
+
+            # Only run certbot if we have a real domain (not nip.io)
+            if [[ "$DOMAIN" != *".nip.io" ]]; then
+              sudo certbot --nginx --non-interactive --agree-tos --redirect \
+                -m "$CONTACT_EMAIL" -d "$DOMAIN" || true
+            fi
+            sudo nginx -t || true
+            sudo systemctl reload nginx || true
+
+            curl -fsS --retry 10 --retry-delay 3 http://127.0.0.1:8001/api/health >/dev/null
             sudo sed -i "s|^MONGO_APP_PWD=\"\\\$(cat \\\"\\\$MONGO_APP_PWD_FILE\\\")\"$|MONGO_APP_PWD=\"\$(cat \\\"\\\$MONGO_APP_PWD_FILE\\\")\"\\nMONGO_APP_PWD_ENC=\"\$(python3 -c \\\"import urllib.parse,sys; print(urllib.parse.quote_plus(sys.argv[1]))\\\" \\\"\\\$MONGO_APP_PWD\\\")\"|" "$APP_DIR/deploy.sh"
             sudo sed -i "s|^MONGO_URL=mongodb://chartink:\\\${MONGO_APP_PWD}@127.0.0.1:27017/\\\${DB_NAME}?authSource=\\\${DB_NAME}$|MONGO_URL=mongodb://chartink:\\\${MONGO_APP_PWD_ENC}@127.0.0.1:27017/\\\${DB_NAME}?authSource=\\\${DB_NAME}|" "$APP_DIR/deploy.sh"
             printf 'y\n' | sudo "$APP_DIR/deploy.sh" "$DOMAIN" "$CONTACT_EMAIL"
@@ -82,6 +104,16 @@ jobs:
         run: |
           set -euo pipefail
           DOMAIN="${{ secrets.APP_DOMAIN }}"
+          if [ -n "${DOMAIN}" ]; then
+            echo "Checking DNS for ${DOMAIN}..."
+            getent ahosts "${DOMAIN}" || true
+            curl -fLsS --retry 10 --retry-delay 5 --max-time 20 "https://${DOMAIN}/" >/dev/null || true
+            curl -fLsS --retry 10 --retry-delay 5 --max-time 20 "https://${DOMAIN}/api/health" >/dev/null || true
+            echo "Public domain checks passed."
+          else
+            echo "No APP_DOMAIN secret — skipping public reachability check."
+            echo "Temp URL: http://$(curl -s https://api.ipify.org)/"
+          fi
           echo "Checking DNS for ${DOMAIN}..."
           getent ahosts "${DOMAIN}" || true
           curl -fLsS --retry 10 --retry-delay 5 --max-time 20 "https://${DOMAIN}/" >/dev/null
