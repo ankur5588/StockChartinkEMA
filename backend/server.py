@@ -1767,46 +1767,46 @@ async def _run_ema_sl_for_user(user_id: str, connected: Optional[dict] = None) -
                         existing = None  # fall through to place new order for other brokers
 
                 if not existing or not existing.get("order_id"):
+                    # Use SL-M for delivery holdings (many brokers reject SL for CNC).
+                    # Pass amo=True so orders queue after market hours.
+                    is_holding = pos.get("source") == "holding"
+                    ot = "SL-M" if is_holding else "SL"
+                    order_price = 0 if is_holding else limit_price
+                    msg_type = "SL-M" if is_holding else "SL"
+
                     if broker == "kotak_neo":
                         resp = kotak_client.place_order(
                             user_id=user_id,
                             trading_symbol=sym,
                             transaction_type="S",
                             quantity=pos["quantity"],
-                            order_type="SL",
+                            order_type=ot,
                             product=pos.get("product") or "CNC",
                             exchange_segment=pos.get("exchange_segment", "nse_cm"),
-                            price=str(limit_price),
+                            price=str(order_price),
                             trigger_price=str(trigger_price),
+                            amo=True,
                         )
                         run.order_id = (resp or {}).get("nOrdNo") or (resp or {}).get("orderId")
                     elif broker == "dhan":
-                        # Delivery holdings (source="holding") use LIMIT instead of
-                        # STOP_LOSS because Dhan rejects SL orders for CNC delivery.
-                        is_holding = pos.get("source") == "holding"
-                        # Delivery holdings: use SL-M (stop loss market) since Dhan
-                        # rejects STOP_LOSS (limit) orders for CNC/delivery products.
-                        dhan_ot = "SL-M" if is_holding else "SL"
-                        dhan_price = 0 if is_holding else limit_price
-                        dhan_trigger = trigger_price
-                        msg_suffix = "SL-M" if is_holding else "SL"
                         resp = dhan_client.place_order(
                             user_id=user_id, symbol=sym,
                             transaction_type="S", quantity=pos["quantity"],
-                            order_type=dhan_ot, product=pos.get("product") or "CNC",
+                            order_type=ot, product=pos.get("product") or "CNC",
                             exchange_segment=pos.get("exchange_segment", "NSE_EQ"),
-                            price=dhan_price, trigger_price=dhan_trigger,
+                            price=order_price, trigger_price=trigger_price,
                             security_id=pos.get("security_id"),
+                            amo=True,
                         )
                         run.order_id = resp.get("order_id")
-                        run.message = f"Placed {msg_suffix} at trigger {trigger_price} on {broker}" 
                     elif broker == "alice_blue":
                         resp = alice_client.place_order(
                             user_id=user_id, symbol=sym,
                             transaction_type="S", quantity=pos["quantity"],
-                            order_type="SL", product=pos.get("product") or "CNC",
+                            order_type=ot, product=pos.get("product") or "CNC",
                             exchange=("NSE" if str(pos.get("exchange_segment", "NSE")).upper().startswith("NSE") else "BSE"),
-                            price=limit_price, trigger_price=trigger_price,
+                            price=order_price, trigger_price=trigger_price,
+                            amo=True,
                         )
                         run.order_id = resp.get("order_id")
                     elif broker == "indmoney":
@@ -1816,21 +1816,22 @@ async def _run_ema_sl_for_user(user_id: str, connected: Optional[dict] = None) -
                             order_type="SL", product=pos.get("product") or "CNC",
                             exchange_segment=("NSE" if str(pos.get("exchange_segment", "NSE")).upper().startswith("NSE") else "BSE"),
                             price=limit_price, trigger_price=trigger_price,
+                            amo=True,
                         )
                         run.order_id = resp.get("order_id")
                     elif broker == "delta_exchange":
                         resp = delta_client.place_order(
                             user_id=user_id, symbol=sym,
                             transaction_type="S", quantity=pos["quantity"],
-                            order_type="SL", product=pos.get("product") or "CNC",
+                            order_type=ot, product=pos.get("product") or "CNC",
                             exchange_segment="CRYPTO",
-                            price=limit_price, trigger_price=trigger_price,
+                            price=order_price, trigger_price=trigger_price,
+                            amo=True,
                         )
                         run.order_id = resp.get("order_id")
+                    run.message = f"Placed {msg_type} at trigger {trigger_price} on {broker}"
                     if run.status != "updated":
                         run.status = "placed"
-                        if not run.message:
-                            run.message = f"SL placed at {trigger_price} (limit {limit_price}) on {broker}"
             except (kotak_client.KotakError, dhan_client.DhanError, alice_client.AliceError, indmoney_client.IndMoneyError, delta_client.DeltaError) as e:
                 run.status = "error"
                 run.message = str(e)

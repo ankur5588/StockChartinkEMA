@@ -162,6 +162,7 @@ def place_order(
     exchange_segment: str = "CRYPTO",
     price: float = 0,
     trigger_price: float = 0,
+    amo: bool = False,
 ) -> dict:
     client = _get(user_id)
     pid = _product_id_for(symbol)
