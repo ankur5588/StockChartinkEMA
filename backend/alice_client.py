@@ -106,6 +106,47 @@ def get_positions(user_id: str) -> list:
     return [o for o in out if o["quantity"] != 0]
 
 
+def get_holdings(user_id: str) -> list:
+    """Return delivery holdings (CNC long positions) from Alice Blue."""
+    alice = _get(user_id)
+    try:
+        resp = alice.get_holding_positions()
+    except Exception as e:
+        raise AliceError(f"get_holding_positions failed: {e}")
+    holdings = resp if isinstance(resp, list) else (resp.get("data") if isinstance(resp, dict) else [])
+    out = []
+    for h in holdings or []:
+        if not isinstance(h, dict):
+            continue
+        try:
+            qty = int(float(h.get("totalqty") or h.get("Totalqty") or h.get("holdqty") or h.get("quantity") or 0))
+        except Exception:
+            qty = 0
+        if qty <= 0:
+            continue
+        sym = (h.get("Tsym") or h.get("tsym") or h.get("Trsym") or h.get("symbol") or "UNKNOWN").upper()
+        try:
+            avg = float(h.get("avgprice") or h.get("Avgprice") or h.get("hpavgprice") or 0)
+        except Exception:
+            avg = 0.0
+        try:
+            ltp = float(h.get("LTP") or h.get("Ltp") or 0) or None
+        except Exception:
+            ltp = None
+        out.append({
+            "broker": "alice_blue",
+            "symbol": sym,
+            "exchange_segment": (h.get("Exchange") or "NSE").upper(),
+            "quantity": qty,
+            "avg_price": round(avg, 2) if avg else 0.0,
+            "ltp": round(ltp, 2) if ltp else None,
+            "pnl": None,
+            "product": "CNC",
+            "source": "holding",
+        })
+    return out
+
+
 def place_order(
     user_id: str,
     symbol: str,

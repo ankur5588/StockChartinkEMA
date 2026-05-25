@@ -484,10 +484,18 @@ async def dhan_delete_credentials(user: User = Depends(require_user)):
 @api.get("/dhan/status")
 async def dhan_status(user: User = Depends(require_user)):
     doc = await db.dhan_credentials.find_one({"user_id": user.user_id}, {"_id": 0})
+    client_id = None
+    if doc and "encrypted" in doc:
+        try:
+            creds = decrypt_dict(doc["encrypted"])
+            client_id = creds.get("client_id")
+        except Exception:
+            pass
     return {
         "has_credentials": bool(doc),
         "is_authenticated": dhan_client.is_authenticated(user.user_id),
         "last_login_at": (doc or {}).get("last_login_at"),
+        "client_id": client_id,
     }
 
 
@@ -1685,6 +1693,10 @@ async def _run_ema_sl_for_user(user_id: str, connected: Optional[dict] = None) -
             all_positions.extend(alice_client.get_positions(user_id))
         except Exception as e:
             logger.warning("alice positions fetch failed: %s", e)
+        try:
+            all_positions.extend(alice_client.get_holdings(user_id))
+        except Exception as e:
+            logger.warning("alice holdings fetch failed: %s", e)
     if connected.get("indmoney"):
         try:
             all_positions.extend(indmoney_client.get_positions(user_id))
