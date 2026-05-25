@@ -1667,11 +1667,19 @@ async def _run_ema_sl_for_user(user_id: str, connected: Optional[dict] = None) -
             all_positions.extend(_normalise_positions(kotak_client.get_positions(user_id)))
         except Exception as e:
             logger.warning("kotak positions fetch failed: %s", e)
+        try:
+            all_positions.extend(_normalise_positions(kotak_client.get_holdings(user_id)))
+        except Exception as e:
+            logger.warning("kotak holdings fetch failed: %s", e)
     if connected.get("dhan"):
         try:
             all_positions.extend(dhan_client.get_positions(user_id))
         except Exception as e:
             logger.warning("dhan positions fetch failed: %s", e)
+        try:
+            all_positions.extend(dhan_client.get_holdings(user_id))
+        except Exception as e:
+            logger.warning("dhan holdings fetch failed: %s", e)
     if connected.get("alice_blue"):
         try:
             all_positions.extend(alice_client.get_positions(user_id))

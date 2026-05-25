@@ -168,6 +168,40 @@ def get_positions(user_id: str) -> list:
     return [o for o in out if o["quantity"] != 0]
 
 
+def get_holdings(user_id: str) -> list:
+    """Return delivery holdings (CNC long positions) from Dhan.
+
+    Holdings represent shares held in the demat account (delivery),
+    as opposed to get_positions() which returns intraday open positions.
+    """
+    client = _get(user_id)
+    try:
+        resp = client.get_holdings()
+    except Exception as e:
+        _invalidate_on_auth_error(user_id, e)
+        raise DhanError(f"get_holdings failed: {e}")
+    data = resp.get("data") if isinstance(resp, dict) else resp
+    holdings = data if isinstance(data, list) else []
+    out = []
+    for h in holdings:
+        qty = int(h.get("totalQty") or h.get("availableQty") or h.get("dpQty") or 0)
+        if qty <= 0:
+            continue
+        out.append({
+            "broker": "dhan",
+            "symbol": (h.get("tradingSymbol") or h.get("trading_symbol") or "UNKNOWN").upper(),
+            "exchange_segment": "NSE_EQ",
+            "security_id": h.get("securityId") or h.get("security_id"),
+            "quantity": qty,
+            "avg_price": float(h.get("avgCostPrice") or h.get("costPrice") or 0),
+            "ltp": float(h.get("lastTradedPrice") or h.get("ltp") or 0) or None,
+            "pnl": None,
+            "product": "CNC",
+            "source": "holding",
+        })
+    return out
+
+
 def place_order(
     user_id: str,
     symbol: str,
