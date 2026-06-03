@@ -48,9 +48,14 @@ export default function EmaPanel({ kotakAuthenticated }) {
     setRunning(true);
     try {
       const res = await api.post("/ema-sl/run");
-      toast.success(
-        `EMA10 SL run completed \u2014 ${res.data.count} position(s) processed`
-      );
+      const msg = res.data.note
+        ? `EMA10 SL run completed \u2014 ${res.data.count} position(s) processed. ${res.data.note}`
+        : `EMA10 SL run completed \u2014 ${res.data.count} position(s) processed`;
+      if (res.data.note) {
+        toast.warning(msg);
+      } else {
+        toast.success(msg);
+      }
       setConfirming(false);
       load();
     } catch (err) {

@@ -8,9 +8,9 @@ browsers reject when `withCredentials` is on).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
-import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -161,50 +161,58 @@ def build_router(db) -> APIRouter:
 
     @router.post("/register")
     async def register(payload: RegisterInput, response: Response):
-        email = payload.email.lower().strip()
-        existing = await db.users.find_one({"email": email}, {"_id": 0})
-        if existing and existing.get("password_hash"):
-            raise HTTPException(status_code=409, detail="An account with this email already exists.")
-        now = datetime.now(timezone.utc)
-        if existing:
-            # Google user registering a password — link to same user_id
-            user_id = existing["user_id"]
-            await db.users.update_one(
-                {"user_id": user_id},
-                {"$set": {
-                    "name": payload.name.strip() or existing.get("name"),
-                    "password_hash": hash_password(payload.password),
-                }},
-            )
-        else:
-            user_id = f"user_{uuid.uuid4().hex[:12]}"
-            await db.users.insert_one(
-                {
-                    "user_id": user_id,
-                    "email": email,
-                    "name": payload.name.strip(),
-                    "password_hash": hash_password(payload.password),
-                    "created_at": now.isoformat(),
-                }
-            )
-        token = await _create_session(db, user_id, email, response)
-        return {
-            "user": {"user_id": user_id, "email": email, "name": payload.name.strip()},
-            "session_token": token,
-        }
+        try:
+            email = payload.email.lower().strip()
+            existing = await db.users.find_one({"email": email}, {"_id": 0})
+            if existing and existing.get("password_hash"):
+                raise HTTPException(status_code=409, detail="An account with this email already exists.")
+            now = datetime.now(timezone.utc)
+            if existing:
+                user_id = existing["user_id"]
+                await db.users.update_one(
+                    {"user_id": user_id},
+                    {"$set": {
+                        "name": payload.name.strip() or existing.get("name"),
+                        "password_hash": hash_password(payload.password),
+                    }},
+                )
+            else:
+                user_id = f"user_{uuid.uuid4().hex[:12]}"
+                await db.users.insert_one(
+                    {
+                        "user_id": user_id,
+                        "email": email,
+                        "name": payload.name.strip(),
+                        "password_hash": hash_password(payload.password),
+                        "created_at": now.isoformat(),
+                    }
+                )
+            token = await _create_session(db, user_id, email, response)
+            return {
+                "user": {"user_id": user_id, "email": email, "name": payload.name.strip()},
+                "session_token": token,
+            }
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error("Register error for %s: %s", payload.email, e, exc_info=True)
+            raise HTTPException(status_code=500, detail="Registration failed. Please try again.")
 
     @router.post("/login")
     async def login(payload: LoginInput, request: Request, response: Response):
         email = payload.email.lower().strip()
-        ip = (request.headers.get("x-forwarded-for") or request.client.host or "?").split(",")[0].strip()
+        ip = (
+            request.headers.get("x-forwarded-for")
+            or (request.client.host if request.client else "?")
+            or "?"
+        ).split(",")[0].strip()
         identifier = f"{ip}:{email}"
 
         await _check_lockout(db, identifier)
 
         user = await db.users.find_one({"email": email}, {"_id": 0})
         if not user or not user.get("password_hash"):
-            # Tiny constant-time-ish delay to discourage user enumeration
-            time.sleep(0.2)
+            await asyncio.sleep(0.2)
             await _record_failed_login(db, identifier)
             raise HTTPException(status_code=401, detail="Invalid email or password.")
         if not verify_password(payload.password, user["password_hash"]):

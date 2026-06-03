@@ -149,6 +149,8 @@ if [[ ! -f "$MONGO_ROOT_PWD_FILE" ]]; then
     chmod 600 "$MONGO_ROOT_PWD_FILE"
 fi
 MONGO_APP_PWD="$(cat "$MONGO_APP_PWD_FILE")"
+MONGO_APP_PWD_ENC="$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote_plus(sys.argv[1]))" "$MONGO_APP_PWD")"
+MONGO_APP_PWD_ENC="$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote_plus(sys.argv[1]))" "$MONGO_APP_PWD")"
 MONGO_ROOT_PWD="$(cat "$MONGO_ROOT_PWD_FILE")"
 
 if ! grep -q "authorization: enabled" /etc/mongod.conf; then

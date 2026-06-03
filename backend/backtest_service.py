@@ -20,9 +20,28 @@ from typing import Optional, List, Dict, Tuple
 
 import pandas as pd
 import numpy as np
+import requests
 import yfinance as yf
 
 logger = logging.getLogger(__name__)
+
+# Desktop User-Agent to reduce chance of yfinance rate limiting
+_yf_session = requests.Session()
+_yf_session.headers.update({
+    "User-Agent": (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "en-US,en;q=0.5",
+})
+
+
+def _yf_ticker(symbol: str):
+    """Create a yfinance Ticker with a desktop User-Agent session."""
+    t = yf.Ticker(symbol)
+    t.session = _yf_session
+    return t
 
 # Default universe: Nifty 50 + Nifty Next 50 symbols (NSE)
 NIFTY_100 = [
@@ -169,7 +188,7 @@ _CRITERIA_KEYS = [
 
 def backtest_symbol(symbol: str, period: str = "1y") -> Optional[Dict]:
     """Run the full screening criteria on a single symbol (latest candle only)."""
-    ticker = yf.Ticker(f"{symbol}.NS")
+    ticker = _yf_ticker(f"{symbol}.NS")
     try:
         hist = ticker.history(period=period, interval="1d", auto_adjust=False)
     except Exception as e:
@@ -253,7 +272,7 @@ def backtest_signal(symbol: str, target_date: str, forward_horizons: List[int] =
     start = target_dt - pd.DateOffset(years=2, months=6)
     end = target_dt + pd.DateOffset(days=max_forward * 2 + 10)
 
-    ticker = yf.Ticker(f"{symbol}.NS")
+    ticker = _yf_ticker(f"{symbol}.NS")
     try:
         hist = ticker.history(start=start, end=end, interval="1d", auto_adjust=False)
     except Exception as e:

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
@@ -16,6 +16,11 @@ import { toast } from "sonner";
 import { api } from "@/lib/api";
 
 export default function DhanCard({ status, reload }) {
+  useEffect(() => {
+    if (status?.client_id) {
+      setForm((s) => ({ ...s, client_id: status.client_id }));
+    }
+  }, [status?.client_id]);
   const [setupOpen, setSetupOpen] = useState(false);
   const [form, setForm] = useState({ client_id: "", access_token: "" });
   const [busy, setBusy] = useState(false);

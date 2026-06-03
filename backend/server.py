@@ -28,6 +28,7 @@ import alice_client
 import indmoney_client
 import delta_client
 import auth_service
+import telegram_notifier
 from ema_service import compute_ema10
 from backtest_service import run_backtest, run_signal_backtest, NIFTY_100
 from models import (
@@ -483,10 +484,18 @@ async def dhan_delete_credentials(user: User = Depends(require_user)):
 @api.get("/dhan/status")
 async def dhan_status(user: User = Depends(require_user)):
     doc = await db.dhan_credentials.find_one({"user_id": user.user_id}, {"_id": 0})
+    client_id = None
+    if doc and "encrypted" in doc:
+        try:
+            creds = decrypt_dict(doc["encrypted"])
+            client_id = creds.get("client_id")
+        except Exception:
+            pass
     return {
         "has_credentials": bool(doc),
         "is_authenticated": dhan_client.is_authenticated(user.user_id),
         "last_login_at": (doc or {}).get("last_login_at"),
+        "client_id": client_id,
     }
 
 
@@ -989,22 +998,27 @@ async def list_symbol_mappings(user: User = Depends(require_user)):
 
 @api.post("/symbol-mappings")
 async def create_symbol_mapping(payload: SymbolMappingInput, user: User = Depends(require_user)):
-    data = payload.model_dump()
-    data["chartink_symbol"] = data["chartink_symbol"].upper().strip()
-    data["nse_symbol"] = data["nse_symbol"].upper().strip()
-    if data.get("category") and data["category"] not in CATEGORIES:
-        raise HTTPException(status_code=400, detail=f"Invalid category: {data['category']}")
-    mapping = SymbolMapping(user_id=user.user_id, **data)
-    doc = mapping.model_dump()
-    doc["created_at"] = doc["created_at"].isoformat()
-    # Replace any existing mapping with the same (chartink_symbol, broker) pair
-    await db.symbol_mappings.delete_many({
-        "user_id": user.user_id,
-        "chartink_symbol": mapping.chartink_symbol,
-        "broker": mapping.broker,
-    })
-    await db.symbol_mappings.insert_one(doc)
-    return mapping
+    try:
+        data = payload.model_dump()
+        data["chartink_symbol"] = data["chartink_symbol"].upper().strip()
+        data["nse_symbol"] = data["nse_symbol"].upper().strip()
+        if data.get("category") and data["category"] not in CATEGORIES:
+            raise HTTPException(status_code=400, detail=f"Invalid category: {data['category']}")
+        mapping = SymbolMapping(user_id=user.user_id, **data)
+        doc = mapping.model_dump()
+        doc["created_at"] = doc["created_at"].isoformat()
+        await db.symbol_mappings.delete_many({
+            "user_id": user.user_id,
+            "chartink_symbol": mapping.chartink_symbol,
+            "broker": mapping.broker,
+        })
+        await db.symbol_mappings.insert_one(doc)
+        return mapping
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Symbol mapping create error: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to create symbol mapping.")
 
 
 @api.put("/symbol-mappings/{mapping_id}")
@@ -1315,6 +1329,28 @@ async def chartink_webhook(token: str, request: Request):
     wdoc = wlog.model_dump()
     wdoc["created_at"] = wdoc["created_at"].isoformat()
     await db.webhook_logs.insert_one(wdoc)
+
+    # Notify Telegram about the incoming Chartink signal
+    try:
+        user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0, "name": 1, "email": 1})
+        tg_name = user_doc.get("name") or user_doc.get("email") or user_id if user_doc else user_id
+        stocks_str = ", ".join(
+            f"{s} ({f'₹{p:,.2f}' if p else 'N/A'})"
+            for s, p in zip(stocks, prices)
+        )
+        tg_msg = (
+            f"📊 <b>Chartink Signal</b>\n"
+            f"Alert: {alert_name}\n"
+            f"User: {tg_name}\n"
+            f"Stocks: {stocks_str}\n"
+            f"Placed: {'✅' if placed_any else '❌'} {sum(1 for n in result_notes if 'success' in n)} success / "
+            f"{sum(1 for n in result_notes if 'fail' in n or 'skip' in n)} fail"
+        )
+        if result_notes:
+            tg_msg += "\n\n" + "\n".join(result_notes[:5])
+        telegram_notifier.send(tg_msg)
+    except Exception as e:
+        logger.error("Telegram notification error for webhook: %s", e)
 
     return {"ok": True, "received": True, "placed": placed_any, "notes": result_notes}
 
@@ -1661,16 +1697,28 @@ async def _run_ema_sl_for_user(user_id: str, connected: Optional[dict] = None) -
             all_positions.extend(_normalise_positions(kotak_client.get_positions(user_id)))
         except Exception as e:
             logger.warning("kotak positions fetch failed: %s", e)
+        try:
+            all_positions.extend(_normalise_positions(kotak_client.get_holdings(user_id)))
+        except Exception as e:
+            logger.warning("kotak holdings fetch failed: %s", e)
     if connected.get("dhan"):
         try:
             all_positions.extend(dhan_client.get_positions(user_id))
         except Exception as e:
             logger.warning("dhan positions fetch failed: %s", e)
+        try:
+            all_positions.extend(dhan_client.get_holdings(user_id))
+        except Exception as e:
+            logger.warning("dhan holdings fetch failed: %s", e)
     if connected.get("alice_blue"):
         try:
             all_positions.extend(alice_client.get_positions(user_id))
         except Exception as e:
             logger.warning("alice positions fetch failed: %s", e)
+        try:
+            all_positions.extend(alice_client.get_holdings(user_id))
+        except Exception as e:
+            logger.warning("alice holdings fetch failed: %s", e)
     if connected.get("indmoney"):
         try:
             all_positions.extend(indmoney_client.get_positions(user_id))
@@ -1681,6 +1729,17 @@ async def _run_ema_sl_for_user(user_id: str, connected: Optional[dict] = None) -
             all_positions.extend(delta_client.get_positions(user_id))
         except Exception as e:
             logger.warning("delta positions fetch failed: %s", e)
+
+    # Fetch existing open SL orders so we can update rather than duplicate
+    existing_sls: dict = {}
+    if connected.get("dhan"):
+        try:
+            for o in dhan_client.get_open_orders(user_id):
+                if o["order_type"] == "STOP_LOSS" and o["status"] in ("TRIGGER_PENDING", "PENDING", "OPEN"):
+                    sym_norm = o["symbol"].upper().replace("-EQ", "")
+                    existing_sls[f"dhan:{sym_norm}"] = o
+        except Exception as e:
+            logger.warning("dhan get_open_orders failed: %s", e)
 
     runs: List[dict] = []
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -1709,58 +1768,94 @@ async def _run_ema_sl_for_user(user_id: str, connected: Optional[dict] = None) -
                 limit_price = round_to_tick(ema * 0.995, tick)
                 if limit_price >= trigger_price:
                     limit_price = round_to_tick(trigger_price - tick, tick)
-                if broker == "kotak_neo":
-                    resp = kotak_client.place_order(
-                        user_id=user_id,
-                        trading_symbol=sym,
-                        transaction_type="S",
-                        quantity=pos["quantity"],
-                        order_type="SL",
-                        product=pos.get("product") or "CNC",
-                        exchange_segment=pos.get("exchange_segment", "nse_cm"),
-                        price=str(limit_price),
-                        trigger_price=str(trigger_price),
-                    )
-                    run.order_id = (resp or {}).get("nOrdNo") or (resp or {}).get("orderId")
-                elif broker == "dhan":
-                    resp = dhan_client.place_order(
-                        user_id=user_id, symbol=sym,
-                        transaction_type="S", quantity=pos["quantity"],
-                        order_type="SL", product=pos.get("product") or "CNC",
-                        exchange_segment=pos.get("exchange_segment", "NSE_EQ"),
-                        price=limit_price, trigger_price=trigger_price,
-                        security_id=pos.get("security_id"),
-                    )
-                    run.order_id = resp.get("order_id")
-                elif broker == "alice_blue":
-                    resp = alice_client.place_order(
-                        user_id=user_id, symbol=sym,
-                        transaction_type="S", quantity=pos["quantity"],
-                        order_type="SL", product=pos.get("product") or "CNC",
-                        exchange=("NSE" if str(pos.get("exchange_segment", "NSE")).upper().startswith("NSE") else "BSE"),
-                        price=limit_price, trigger_price=trigger_price,
-                    )
-                    run.order_id = resp.get("order_id")
-                elif broker == "indmoney":
-                    resp = indmoney_client.place_order(
-                        user_id=user_id, symbol=sym,
-                        transaction_type="S", quantity=pos["quantity"],
-                        order_type="SL", product=pos.get("product") or "CNC",
-                        exchange_segment=("NSE" if str(pos.get("exchange_segment", "NSE")).upper().startswith("NSE") else "BSE"),
-                        price=limit_price, trigger_price=trigger_price,
-                    )
-                    run.order_id = resp.get("order_id")
-                elif broker == "delta_exchange":
-                    resp = delta_client.place_order(
-                        user_id=user_id, symbol=sym,
-                        transaction_type="S", quantity=pos["quantity"],
-                        order_type="SL", product=pos.get("product") or "CNC",
-                        exchange_segment="CRYPTO",
-                        price=limit_price, trigger_price=trigger_price,
-                    )
-                    run.order_id = resp.get("order_id")
-                run.status = "placed"
-                run.message = f"SL placed at {trigger_price} (limit {limit_price}) on {broker}"
+
+                # Check if an existing SL order can be updated instead of placing a new one
+                sym_key = f"{broker}:{sym.upper().replace('-EQ', '')}"
+                existing = existing_sls.get(sym_key)
+
+                if existing and existing.get("order_id"):
+                    if broker == "dhan":
+                        resp = dhan_client.modify_sl_order(
+                            user_id=user_id,
+                            order_id=existing["order_id"],
+                            new_trigger_price=trigger_price,
+                            new_limit_price=limit_price,
+                            quantity=pos["quantity"],
+                        )
+                        run.order_id = existing["order_id"]
+                        run.status = "updated"
+                        run.message = f"SL updated to {trigger_price} (limit {limit_price}) on {broker}"
+                    else:
+                        existing = None  # fall through to place new order for other brokers
+
+                if not existing or not existing.get("order_id"):
+                    # Use SL-M for delivery holdings (many brokers reject SL for CNC).
+                    # Pass amo=True so orders queue after market hours.
+                    is_holding = pos.get("source") == "holding"
+                    # Dhan does not accept SL-M for CNC; use SL with limit price.
+                    use_slm = is_holding and broker != "dhan"
+                    ot = "SL-M" if use_slm else "SL"
+                    order_price = 0 if use_slm else limit_price
+                    msg_type = "SL-M" if use_slm else "SL"
+
+                    if broker == "kotak_neo":
+                        resp = kotak_client.place_order(
+                            user_id=user_id,
+                            trading_symbol=sym,
+                            transaction_type="S",
+                            quantity=pos["quantity"],
+                            order_type=ot,
+                            product=pos.get("product") or "CNC",
+                            exchange_segment=pos.get("exchange_segment", "nse_cm"),
+                            price=str(order_price),
+                            trigger_price=str(trigger_price),
+                            amo=True,
+                        )
+                        run.order_id = (resp or {}).get("nOrdNo") or (resp or {}).get("orderId")
+                    elif broker == "dhan":
+                        resp = dhan_client.place_order(
+                            user_id=user_id, symbol=sym,
+                            transaction_type="S", quantity=pos["quantity"],
+                            order_type=ot, product=pos.get("product") or "CNC",
+                            exchange_segment=pos.get("exchange_segment", "NSE_EQ"),
+                            price=order_price, trigger_price=trigger_price,
+                            security_id=pos.get("security_id"),
+                            amo=True,
+                        )
+                        run.order_id = resp.get("order_id")
+                    elif broker == "alice_blue":
+                        resp = alice_client.place_order(
+                            user_id=user_id, symbol=sym,
+                            transaction_type="S", quantity=pos["quantity"],
+                            order_type=ot, product=pos.get("product") or "CNC",
+                            exchange=("NSE" if str(pos.get("exchange_segment", "NSE")).upper().startswith("NSE") else "BSE"),
+                            price=order_price, trigger_price=trigger_price,
+                            amo=True,
+                        )
+                        run.order_id = resp.get("order_id")
+                    elif broker == "indmoney":
+                        resp = indmoney_client.place_order(
+                            user_id=user_id, symbol=sym,
+                            transaction_type="S", quantity=pos["quantity"],
+                            order_type="SL", product=pos.get("product") or "CNC",
+                            exchange_segment=("NSE" if str(pos.get("exchange_segment", "NSE")).upper().startswith("NSE") else "BSE"),
+                            price=limit_price, trigger_price=trigger_price,
+                            amo=True,
+                        )
+                        run.order_id = resp.get("order_id")
+                    elif broker == "delta_exchange":
+                        resp = delta_client.place_order(
+                            user_id=user_id, symbol=sym,
+                            transaction_type="S", quantity=pos["quantity"],
+                            order_type=ot, product=pos.get("product") or "CNC",
+                            exchange_segment="CRYPTO",
+                            price=order_price, trigger_price=trigger_price,
+                            amo=True,
+                        )
+                        run.order_id = resp.get("order_id")
+                    run.message = f"Placed {msg_type} at trigger {trigger_price} on {broker}"
+                    if run.status != "updated":
+                        run.status = "placed"
             except (kotak_client.KotakError, dhan_client.DhanError, alice_client.AliceError, indmoney_client.IndMoneyError, delta_client.DeltaError) as e:
                 run.status = "error"
                 run.message = str(e)
@@ -1788,7 +1883,15 @@ async def _run_ema_sl_for_user(user_id: str, connected: Optional[dict] = None) -
         await db.trade_logs.insert_one(tdoc)
         runs.append(run.model_dump(mode="json"))
 
-    return {"ok": True, "count": len(runs), "runs": runs, "ran_at": now_iso}
+    if len(runs) == 0:
+        auth_count = sum(1 for v in connected.values() if v) if connected else 0
+        if auth_count == 0:
+            note = "No broker session active. Visit Dashboard → broker cards and click Connect."
+        else:
+            note = "Brokers connected but no open long positions found."
+    else:
+        note = None
+    return {"ok": True, "count": len(runs), "runs": runs, "ran_at": now_iso, "note": note}
 
 
 @api.post("/ema-sl/run")
@@ -1838,7 +1941,7 @@ async def set_ema_schedule(payload: EmaScheduleInput, user: User = Depends(requi
             "user_id": user.user_id,
             "interval": interval,
             "enabled": payload.enabled,
-            "next_run_at": next_run.isoformat(),
+            "next_run_at": next_run,
             "created_at": now.isoformat(),
         }},
         upsert=True,
@@ -1867,12 +1970,49 @@ def _calc_next_run(interval: str, now: datetime) -> datetime:
         return nxt
 
 
+_last_tg_notif: dict = {}  # user_id -> datetime of last sent notification
+
+
+async def _telegram_notification_loop():
+    """Background loop: drains Dhan auth-error notifications and sends Telegram
+    at most once per 24h per user, never on weekends."""
+    while True:
+        try:
+            now = datetime.now(timezone.utc)
+            # Weekend check: Saturday=5, Sunday=6
+            if now.weekday() >= 5:
+                dhan_client._pending_auth_notifications.clear()
+                await asyncio.sleep(300)
+                continue
+
+            while dhan_client._pending_auth_notifications:
+                uid, msg = dhan_client._pending_auth_notifications.pop(0)
+                last_sent = _last_tg_notif.get(uid)
+                if last_sent and (now - last_sent).total_seconds() < 86400:
+                    continue
+                try:
+                    user_doc = await db.users.find_one({"user_id": uid}, {"_id": 0, "name": 1})
+                    name = user_doc.get("name", uid) if user_doc else uid
+                    telegram_notifier.send(
+                        "⚠️ <b>Dhan session expired</b>\n"
+                        "User: " + str(name) + "\n"
+                        "Error: " + str(msg) + "\n\n"
+                        "Please reconnect at the dashboard."
+                    )
+                    _last_tg_notif[uid] = now
+                except Exception as e:
+                    logger.error("telegram notification error: %s", e)
+        except Exception as e:
+            logger.error("[tg-notif] loop error: %s", e)
+        await asyncio.sleep(30)
+
+
 async def _ema_scheduler_loop():
     """Background loop: checks MongoDB every 30s for due EMA schedules."""
     while True:
         try:
             now = datetime.now(timezone.utc)
-            cursor = db.ema_schedules.find({"enabled": True, "next_run_at": {"$lte": now.isoformat()}}, {"_id": 0})
+            cursor = db.ema_schedules.find({"enabled": True, "next_run_at": {"$lte": now}}, {"_id": 0})
             schedules = [s async for s in cursor]
             for sched in schedules:
                 uid = sched["user_id"]
@@ -1886,7 +2026,7 @@ async def _ema_scheduler_loop():
                 await db.ema_schedules.update_one(
                     {"user_id": uid},
                     {"$set": {"last_run_at": datetime.now(timezone.utc).isoformat(),
-                               "next_run_at": nxt.isoformat()}},
+                               "next_run_at": nxt}},
                 )
         except Exception as e:
             logger.error("[scheduler] loop error: %s", e)
@@ -2045,9 +2185,36 @@ app.include_router(auth_service.build_router(db), prefix="/api/auth")
 
 @app.on_event("startup")
 async def _startup():
+    telegram_notifier.init()
     await auth_service.ensure_indexes(db)
     await auth_service.seed_admin(db)
+
+    # Auto-reconnect broker sessions after restart
+    _reconnect_count = 0
+    for collection, mod, builder in (
+        ("dhan_credentials", dhan_client, lambda c: (c["client_id"], c["access_token"])),
+        ("alice_credentials", alice_client, lambda c: (c["user_id"], c["api_key"])),
+        ("indmoney_credentials", indmoney_client, lambda c: (c["access_token"],)),
+        ("delta_credentials", delta_client, lambda c: (c["api_key"], c["api_secret"], c.get("environment", "india_prod"))),
+    ):
+        try:
+            async for doc in db[collection].find({}, {"_id": 0, "user_id": 1, "encrypted": 1}):
+                uid = doc["user_id"]
+                if mod.is_authenticated(uid):
+                    continue
+                try:
+                    creds = decrypt_dict(doc["encrypted"])
+                    mod.connect(uid, *builder(creds))
+                    _reconnect_count += 1
+                    logger.info("Auto-reconnected %s for user %s", collection, uid)
+                except Exception as e:
+                    logger.warning("Auto-reconnect failed for %s user %s: %s", collection, uid, e)
+        except Exception as e:
+            logger.warning("Failed to scan %s for reconnect: %s", collection, e)
+    logger.info("Reconnected %d broker session(s) on startup", _reconnect_count)
+
     _scheduler_task = asyncio.create_task(_ema_scheduler_loop())
+    _tg_notif_task = asyncio.create_task(_telegram_notification_loop())
 
 # CORS
 # IMPORTANT: when allow_credentials=True the browser rejects
