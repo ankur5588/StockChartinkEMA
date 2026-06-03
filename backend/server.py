@@ -1330,6 +1330,28 @@ async def chartink_webhook(token: str, request: Request):
     wdoc["created_at"] = wdoc["created_at"].isoformat()
     await db.webhook_logs.insert_one(wdoc)
 
+    # Notify Telegram about the incoming Chartink signal
+    try:
+        user_doc = await db.users.find_one({"user_id": user_id}, {"_id": 0, "name": 1, "email": 1})
+        tg_name = user_doc.get("name") or user_doc.get("email") or user_id if user_doc else user_id
+        stocks_str = ", ".join(
+            f"{s} ({f'₹{p:,.2f}' if p else 'N/A'})"
+            for s, p in zip(stocks, prices)
+        )
+        tg_msg = (
+            f"📊 <b>Chartink Signal</b>\n"
+            f"Alert: {alert_name}\n"
+            f"User: {tg_name}\n"
+            f"Stocks: {stocks_str}\n"
+            f"Placed: {'✅' if placed_any else '❌'} {sum(1 for n in result_notes if 'success' in n)} success / "
+            f"{sum(1 for n in result_notes if 'fail' in n or 'skip' in n)} fail"
+        )
+        if result_notes:
+            tg_msg += "\n\n" + "\n".join(result_notes[:5])
+        telegram_notifier.send(tg_msg)
+    except Exception as e:
+        logger.error("Telegram notification error for webhook: %s", e)
+
     return {"ok": True, "received": True, "placed": placed_any, "notes": result_notes}
 
 
