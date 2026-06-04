@@ -150,7 +150,7 @@ def renew_via_api(access_token: str, client_id: str) -> str | None:
         "dhanClientId": client_id,
     }
     try:
-        r = requests.post(
+        r = requests.get(
             "https://api.dhan.co/v2/RenewToken",
             headers=headers,
             timeout=15,
