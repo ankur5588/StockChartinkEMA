@@ -39,9 +39,16 @@ STATE_FILE = "/tmp/dhan_auto_auth_state.json"
 
 try:
     from pymongo import MongoClient as _MC
-    _db = _MC(os.environ.get("MONGO_URL", "mongodb://localhost:27017"))[
-        os.environ.get("DB_NAME", "chartink_trade")
-    ]
+    _url = os.environ.get("MONGO_URL", "")
+    if not _url:
+        _env_file = Path(__file__).parent / ".env"
+        if _env_file.exists():
+            for line in _env_file.read_text().splitlines():
+                if line.startswith("MONGO_URL="):
+                    _url = line.split("=", 1)[1].strip().strip("\"'")
+                    break
+    _DB_NAME = os.environ.get("DB_NAME", "chartink_trade")
+    _db = _MC(_url or "mongodb://localhost:27017")[_DB_NAME]
 except Exception as e:
     _db = None
     print(f"MongoDB not available: {e}", file=sys.stderr)
@@ -108,6 +115,10 @@ def store_access_token(access_token: str, client_id: str) -> None:
         return
     encrypted = _encrypt({"access_token": access_token, "client_id": client_id})
     user_id = "user_13805a0b2618"
+    if _db is not None:
+        alert_user = _db.alert_configs.find_one({"enabled": True}, {"user_id": 1})
+        if alert_user:
+            user_id = alert_user["user_id"]
     _db.dhan_credentials.update_one(
         {"user_id": user_id},
         {"$set": {"user_id": user_id, "encrypted": encrypted, "updated_at": datetime.now(timezone.utc).isoformat()}},
@@ -334,7 +345,12 @@ def _show_status() -> None:
         print("No MongoDB connection")
         return
 
-    cred_doc = _db.dhan_credentials.find_one({"user_id": "user_13805a0b2618"})
+    uid = "user_13805a0b2618"
+    if _db is not None:
+        alert_user = _db.alert_configs.find_one({"enabled": True}, {"user_id": 1})
+        if alert_user:
+            uid = alert_user["user_id"]
+    cred_doc = _db.dhan_credentials.find_one({"user_id": uid})
     login_doc = _db[AUTH_COLL].find_one({"_id": "dhan_web"})
 
     print(f"\n{'='*50}")
