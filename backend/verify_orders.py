@@ -2,18 +2,25 @@
 """CLI to verify whether orders placed via the system actually filled on the broker side.
 
 Usage:
-  python verify_orders.py                          # recent orders
-  python verify_orders.py --all                    # all open orders
-  python verify_orders.py --watch                  # poll every 10s
-  python verify_orders.py --broker dhan            # specific broker
+  python verify_orders.py                                          # recent orders
+  python verify_orders.py --all                                    # all open orders
+  python verify_orders.py --watch                                  # poll every 10s
+  python verify_orders.py --broker dhan                            # specific broker
+
+  # Store Dhan credentials (run once after DB reset):
+  python verify_orders.py --store-dhan CLIENT_ID ACCESS_TOKEN
+
+  # Upload symbol mappings CSV:
+  python verify_orders.py --upload-csv /path/to/symbol_mappings.csv
 """
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import sys
-import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -131,6 +138,84 @@ def show_order(o: dict, idx: int = 0) -> None:
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+def _store_dhan(access_token: str, client_id: str, user_id: str | None = None) -> None:
+    """Encrypt and store Dhan credentials in MongoDB."""
+    from cryptography.fernet import Fernet
+    import json
+
+    key = os.environ.get("FERNET_KEY", "")
+    if not key:
+        print("FERNET_KEY not set in .env")
+        return
+    cipher = Fernet(key.encode())
+
+    payload = json.dumps({"access_token": access_token, "client_id": client_id})
+    encrypted = cipher.encrypt(payload.encode()).decode()
+
+    uid = user_id or "user_13805a0b2618"
+    _db.dhan_credentials.update_one(
+        {"user_id": uid},
+        {"$set": {"user_id": uid, "encrypted": encrypted}},
+        upsert=True,
+    )
+    print(f"Dhan credentials stored for user {uid}")
+
+
+def _upload_csv(path: str, user_id: str | None = None) -> None:
+    """Upload symbol_mappings CSV to MongoDB (same format as frontend upload)."""
+    import csv
+
+    uid = user_id or "user_13805a0b2618"
+    _db.symbol_mappings.delete_many({"user_id": uid})
+
+    with open(path, newline="") as f:
+        reader = csv.DictReader(f)
+        count = 0
+        for row in reader:
+            row["user_id"] = uid
+            _db.symbol_mappings.insert_one(row)
+            count += 1
+
+    print(f"Uploaded {count} symbol mappings for user {uid}")
+
+
+def _set_category_amount(category: str, amount: float, user_id: str | None = None) -> None:
+    uid = user_id or "user_13805a0b2618"
+    _db.category_amounts.update_one(
+        {"user_id": uid, "category": category},
+        {"$set": {"amount": float(amount)}},
+        upsert=True,
+    )
+    print(f"Set {category} = ₹{amount:,.0f} for user {uid}")
+
+
+def _ensure_alert_config(name: str, user_id: str | None = None) -> None:
+    """Create a simple pass-through alert config if none exists."""
+    import uuid
+
+    uid = user_id or "user_13805a0b2618"
+    existing = _db.alert_configs.find_one({"user_id": uid, "alert_name": name})
+    if existing:
+        print(f"Alert config '{name}' already exists")
+        return
+
+    doc = {
+        "id": str(uuid.uuid4()),
+        "user_id": uid,
+        "alert_name": name,
+        "enabled": True,
+        "broker": "dhan",
+        "transaction_type": "B",
+        "product": "CNC",
+        "exchange_segment": "NSE_EQ",
+        "quantity": 1,
+        "scan_name": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _db.alert_configs.insert_one(doc)
+    print(f"Created alert config '{name}' for user {uid}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Verify broker order status")
     parser.add_argument("--all", action="store_true", help="Show all orders (not just today)")
@@ -138,12 +223,33 @@ def main():
     parser.add_argument("--watch", action="store_true", help="Poll every 10s until all resolve")
     parser.add_argument("--broker", default="dhan", choices=["dhan"])
     parser.add_argument("--user", type=str, default=None, help="MongoDB user_id")
+    parser.add_argument("--store-dhan", nargs=2, metavar=("CLIENT_ID", "ACCESS_TOKEN"), help="Store Dhan credentials")
+    parser.add_argument("--upload-csv", type=str, metavar="PATH", help="Upload symbol_mappings CSV")
+    parser.add_argument("--set-category", nargs=2, metavar=("CATEGORY", "AMOUNT"), help="Set category amount (e.g. 'Large Cap' 50000)")
+    parser.add_argument("--setup-alert", type=str, metavar="ALERT_NAME", help="Create a default alert config (e.g. BUY)")
     args = parser.parse_args()
+
+    if args.store_dhan:
+        _store_dhan(args.store_dhan[1], args.store_dhan[0], args.user)
+        return
+
+    if args.upload_csv:
+        _upload_csv(args.upload_csv, args.user)
+        return
+
+    if args.set_category:
+        _set_category_amount(args.set_category[0], float(args.set_category[1]), args.user)
+        return
+
+    if args.setup_alert:
+        _ensure_alert_config(args.setup_alert, args.user)
+        return
 
     creds = _get_creds(args.user)
     if not creds:
         print("No Dhan credentials found in MongoDB.")
-        print("Add them via the frontend dashboard: https://invesment.pro")
+        print("  To add:  verify_orders.py --store-dhan CLIENT_ID ACCESS_TOKEN")
+        print("  Or use:  https://invesment.pro")
         sys.exit(1)
 
     access_token = creds.get("access_token") or creds.get("accesstoken", "")
