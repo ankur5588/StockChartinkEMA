@@ -246,7 +246,7 @@ def cmd_status():
     # Check if auto-auth creds exist
     if _db is not None:
         totp_doc = _db.dhan_auto_auth.find_one({"_id": "dhan_totp"})
-        if totp_doc and totp_doc.get("totp_secret"):
+        if totp_doc and totp_doc.get("encrypted"):
             print(f"\n  TOTP auto-auth: ✅ configured")
         else:
             print(f"\n  TOTP auto-auth: ❌ not configured (optional for --totp)")
