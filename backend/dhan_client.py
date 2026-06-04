@@ -234,8 +234,7 @@ def place_order(
     dhan_ot = ot_map.get(order_type.upper(), "MARKET")
     dhan_pt = pt_map.get(product.upper(), "CNC")
 
-    # SDK place_order is missing amoTime and sends null for BO fields,
-    # which Dhan v2 API rejects (DH-905). Build payload directly.
+    # Build payload matching Dhan v2 API spec (see SDK _order.py place_order)
     payload = {
         "transactionType": dhan_txn,
         "exchangeSegment": exchange_segment,
@@ -245,20 +244,20 @@ def place_order(
         "securityId": str(sid),
         "quantity": int(quantity),
         "disclosedQuantity": 0,
-        "price": float(price) if dhan_ot in ("LIMIT", "STOP_LOSS") else 0,
+        "price": float(price),
         "triggerPrice": float(trigger_price),
         "afterMarketOrder": amo,
-        "amoTime": "OPEN" if amo else "",
-        "boProfitValue": None,
-        "boStopLossValue": None,
     }
 
+    logger.info("Dhan order payload: %s", payload)
     try:
         resp = client.dhan_http.post("/orders", payload)
     except Exception as e:
+        logger.warning("Dhan place_order exception: %s", e)
         _invalidate_on_auth_error(user_id, e)
         raise DhanError(f"place_order failed: {e}")
 
+    logger.info("Dhan order response: %s", resp)
     if isinstance(resp, dict) and resp.get("status") == "failure":
         _invalidate_on_auth_error(user_id, resp)
         raise DhanError(resp.get("remarks") or "Dhan order rejected")
