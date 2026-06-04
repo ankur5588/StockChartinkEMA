@@ -184,13 +184,19 @@ def _generate_totp(secret: str, interval: int = 30) -> str:
 
 
 def renew_via_totp(
-    dhan_client_id: str, pin: str, totp_secret: str
+    dhan_client_id: str, pin: str, totp_secret: str, api_client_id: str | None = None
 ) -> dict | None:
-    """Generate a fresh access token using Dhan's TOTP-based token endpoint."""
+    """Generate a fresh access token using Dhan's TOTP-based token endpoint.
+
+    ``dhan_client_id`` is the BO ID used to store credentials.
+    ``api_client_id`` is the numeric client ID required by the TOTP API
+    (defaults to ``dhan_client_id`` if not provided).
+    """
     totp = _generate_totp(totp_secret)
+    cid = api_client_id or dhan_client_id
     url = (
         f"https://auth.dhan.co/app/generateAccessToken"
-        f"?dhanClientId={dhan_client_id}&pin={pin}&totp={totp}"
+        f"?dhanClientId={cid}&pin={pin}&totp={totp}"
     )
     try:
         r = requests.post(url, timeout=15)
@@ -304,7 +310,8 @@ def cmd_setup_totp(client_id: str, pin: str, totp_secret: str):
     # Validate by generating a token
     print("🔐 Testing TOTP by generating a token...")
     try:
-        result = renew_via_totp(client_id, pin, totp_secret)
+        # TOTP API requires numeric client ID, not BO ID
+        result = renew_via_totp(client_id, pin, totp_secret, api_client_id="1111393765")
         token = result.get("accessToken", "")
         print(f"✅ TOTP works! Token generated: {token[:50]}...")
         store_creds(token, client_id)
@@ -352,7 +359,8 @@ def cmd_totp_renew():
 
     print(f"🔄 Generating fresh token via TOTP...")
     try:
-        result = renew_via_totp(cid, pin, secret)
+        # TOTP API requires numeric client ID
+        result = renew_via_totp(cid, pin, secret, api_client_id="1111393765")
         token = result.get("accessToken", "")
         store_creds(token, cid)
         print(f"✅ Fresh token generated and stored")
