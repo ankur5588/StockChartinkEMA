@@ -245,7 +245,7 @@ def place_order(
         "securityId": str(sid),
         "quantity": int(quantity),
         "disclosedQuantity": 0,
-        "price": float(price) if dhan_ot in ("LIMIT", "STOP_LOSS") else "",
+        "price": float(price) if dhan_ot in ("LIMIT", "STOP_LOSS") else 0,
         "triggerPrice": float(trigger_price),
         "afterMarketOrder": amo,
         "amoTime": "OPEN" if amo else "",
