@@ -28,7 +28,9 @@ def send(text: str) -> bool:
     try:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
         r = requests.post(url, json={"chat_id": CHAT_ID, "text": text, "parse_mode": "HTML"}, timeout=10)
-        if r.status_code != 200:
+        if r.status_code == 200:
+            logger.info("Telegram message sent (len=%d)", len(text))
+        else:
             logger.warning("Telegram send failed: %s %s", r.status_code, r.text[:200])
             return False
         return True
