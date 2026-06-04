@@ -11,7 +11,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Plug, PowerOff, Settings2 } from "lucide-react";
+import { Plug, PowerOff, Settings2, RefreshCw, CheckCircle2 } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 
@@ -21,12 +21,16 @@ export default function DhanCard({ status, reload }) {
       setForm((s) => ({ ...s, client_id: status.client_id }));
     }
   }, [status?.client_id]);
+
   const [setupOpen, setSetupOpen] = useState(false);
   const [form, setForm] = useState({ client_id: "", access_token: "" });
   const [busy, setBusy] = useState(false);
 
   const hasCreds = status?.has_credentials;
   const isAuth = status?.is_authenticated;
+  const tokenExpiresAt = status?.token_expires_at;
+  const tokenExpired = status?.token_expired;
+  const autoAuth = status?.auto_auth_configured;
 
   const save = async (e) => {
     e.preventDefault();
@@ -81,6 +85,19 @@ export default function DhanCard({ status, reload }) {
     }
   };
 
+  const renew = async () => {
+    setBusy(true);
+    try {
+      const res = await api.post("/dhan/renew");
+      toast.success("Token renewed");
+      reload?.();
+    } catch (err) {
+      toast.error(err?.response?.data?.detail || "Renew failed");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <Card className="bg-surface-2 border-border rounded-sm" data-testid="dhan-card">
       <CardHeader className="pb-3 flex flex-row items-start justify-between space-y-0">
@@ -93,9 +110,10 @@ export default function DhanCard({ status, reload }) {
         <StatusPill isAuth={isAuth} hasCreds={hasCreds} />
       </CardHeader>
       <CardContent className="space-y-3">
-        <div className="grid grid-cols-2 gap-3 pt-1">
+        <div className="grid grid-cols-3 gap-3 pt-1">
           <Stat label="Credentials" value={hasCreds ? "saved" : "missing"} tone={hasCreds ? "ok" : "warn"} />
           <Stat label="Session" value={isAuth ? "active" : "inactive"} tone={isAuth ? "ok" : "warn"} />
+          <TokenExpiryStat expiresAt={tokenExpiresAt} expired={tokenExpired} autoAuth={autoAuth} />
         </div>
         <div className="flex flex-wrap gap-2">
           <Button
@@ -131,6 +149,18 @@ export default function DhanCard({ status, reload }) {
             >
               <PowerOff className="w-3.5 h-3.5 mr-1.5" />
               Disconnect
+            </Button>
+          )}
+          {autoAuth && (
+            <Button
+              size="sm"
+              onClick={renew}
+              disabled={busy}
+              data-testid="dhan-renew-btn"
+              className="rounded-sm h-8 text-xs bg-emerald-600 hover:bg-emerald-700 text-white"
+            >
+              <RefreshCw className="w-3.5 h-3.5 mr-1.5" />
+              Renew now
             </Button>
           )}
           {hasCreds && (
@@ -225,6 +255,40 @@ function Stat({ label, value, tone = "default" }) {
     <div className="border border-border p-3 bg-surface-1 rounded-sm">
       <div className="text-[10px] uppercase tracking-[0.15em] text-muted-foreground">{label}</div>
       <div className={`mt-1 font-mono text-sm ${color}`}>{value}</div>
+    </div>
+  );
+}
+
+function TokenExpiryStat({ expiresAt, expired, autoAuth }) {
+  if (!expiresAt) {
+    return <Stat label="Token expiry" value="—" tone="default" />;
+  }
+
+  const dt = new Date(expiresAt);
+  const now = new Date();
+  const diffMs = dt - now;
+  const isExpired = expired || diffMs <= 0;
+
+  let value, tone;
+  if (isExpired) {
+    value = "expired";
+    tone = "warn";
+  } else {
+    const hrs = Math.floor(diffMs / 3600000);
+    const mins = Math.floor((diffMs % 3600000) / 60000);
+    value = `${hrs}h ${mins}m`;
+    tone = hrs < 2 ? "warn" : "ok";
+  }
+
+  return (
+    <div className="border border-border p-3 bg-surface-1 rounded-sm">
+      <div className="text-[10px] uppercase tracking-[0.15em] text-muted-foreground">
+        Token expiry {autoAuth && <CheckCircle2 className="inline w-3 h-3 ml-1 text-profit" />}
+      </div>
+      <div className={`mt-1 font-mono text-sm flex items-center gap-1 ${tone === "ok" ? "text-profit" : "text-warn"}`}>
+        {autoAuth && !isExpired && <CheckCircle2 className="w-3 h-3" />}
+        {value}
+      </div>
     </div>
   );
 }

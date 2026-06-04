@@ -2,10 +2,16 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import hmac
+import json
 import logging
 import math
 import os
+import struct
 import secrets
+import time as _time
 import uuid
 from decimal import Decimal, ROUND_DOWN
 from datetime import datetime, timedelta, timezone
@@ -481,21 +487,68 @@ async def dhan_delete_credentials(user: User = Depends(require_user)):
     return {"ok": True}
 
 
+# ── JWT / TOTP helpers for Dhan token UI ─────────────────────────────────
+
+def _jwt_expiry(token: str) -> datetime | None:
+    """Decode JWT payload and return the ``exp`` claim as a datetime."""
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+        padded = parts[1] + "=" * (4 - len(parts[1]) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded))
+        exp = payload.get("exp")
+        return datetime.fromtimestamp(exp, tz=timezone.utc) if exp else None
+    except Exception:
+        return None
+
+
+def _totp_code(secret: str) -> str:
+    """RFC 6238 TOTP (Google Authenticator compatible)."""
+    key = base64.b32decode(secret.upper().replace(" ", ""))
+    counter = struct.pack(">Q", int(_time.time()) // 30)
+    mac = hmac.new(key, counter, hashlib.sha1).digest()
+    offset = mac[-1] & 0x0F
+    code = (struct.unpack(">I", mac[offset : offset + 4])[0] & 0x7FFFFFFF) % 1000000
+    return f"{code:06d}"
+
+
+# ── Dhan API routes ─────────────────────────────────────────────────────
+
+
 @api.get("/dhan/status")
 async def dhan_status(user: User = Depends(require_user)):
     doc = await db.dhan_credentials.find_one({"user_id": user.user_id}, {"_id": 0})
     client_id = None
+    token_expires_at = None
     if doc and "encrypted" in doc:
         try:
             creds = decrypt_dict(doc["encrypted"])
             client_id = creds.get("client_id")
+            if creds.get("access_token"):
+                exp = _jwt_expiry(creds["access_token"])
+                token_expires_at = exp.isoformat() if exp else None
         except Exception:
             pass
+
+    # Check if TOTP auto-auth is configured
+    auto_auth_configured = False
+    auto_auth_doc = await db.dhan_auto_auth.find_one({"_id": "dhan_totp"})
+    if auto_auth_doc and auto_auth_doc.get("encrypted"):
+        auto_auth_configured = True
+
     return {
         "has_credentials": bool(doc),
         "is_authenticated": dhan_client.is_authenticated(user.user_id),
         "last_login_at": (doc or {}).get("last_login_at"),
         "client_id": client_id,
+        "token_expires_at": token_expires_at,
+        "token_expired": (
+            token_expires_at is not None and datetime.fromisoformat(token_expires_at) < datetime.now(timezone.utc)
+        )
+        if token_expires_at
+        else None,
+        "auto_auth_configured": auto_auth_configured,
     }
 
 
@@ -520,6 +573,57 @@ async def dhan_connect(user: User = Depends(require_user)):
 async def dhan_disconnect(user: User = Depends(require_user)):
     dhan_client.disconnect(user.user_id)
     return {"ok": True}
+
+
+@api.post("/dhan/renew")
+async def dhan_renew_token(user: User = Depends(require_user)):
+    """Renew Dhan access token via TOTP (triggered from UI)."""
+    totp_doc = await db.dhan_auto_auth.find_one({"_id": "dhan_totp"})
+    if not totp_doc or not totp_doc.get("encrypted"):
+        raise HTTPException(status_code=400, detail="TOTP auto-auth not configured")
+
+    try:
+        totp_creds = decrypt_dict(totp_doc["encrypted"])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to decrypt TOTP creds: {e}")
+
+    cid = totp_creds.get("dhan_client_id", "")
+    pin = totp_creds.get("pin", "")
+    secret = totp_creds.get("totp_secret", "")
+    if not all([cid, pin, secret]):
+        raise HTTPException(status_code=400, detail="Incomplete TOTP credentials")
+
+    # Call Dhan token generation endpoint
+    totp = _totp_code(secret)
+    url = f"https://auth.dhan.co/app/generateAccessToken?dhanClientId=1111393765&pin={pin}&totp={totp}"
+    try:
+        r = requests.post(url, timeout=15)
+        data = r.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"TOTP API call failed: {e}")
+
+    token = data.get("accessToken")
+    if not token:
+        raise HTTPException(status_code=502, detail=f"TOTP auth failed: {data.get('message', 'unknown')}")
+
+    # Store new token
+    encrypted = encrypt_dict({"client_id": cid, "access_token": token})
+    await db.dhan_credentials.update_one(
+        {"user_id": user.user_id},
+        {"$set": {"encrypted": encrypted, "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+
+    # Reconnect session
+    try:
+        dhan_client.connect(user.user_id, cid, token)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Token saved but session reconnect failed: {e}")
+
+    exp = _jwt_expiry(token)
+    return {
+        "ok": True,
+        "token_expires_at": exp.isoformat() if exp else None,
+    }
 
 
 @api.get("/dhan/positions")
@@ -729,6 +833,31 @@ async def delta_positions(user: User = Depends(require_user)):
 # UNIFIED BROKERS & POSITIONS
 # =============================================================================
 
+# ── Dhan token helpers for brokers/status ──────────────────────────────
+
+def _dhan_token_expires(doc: dict | None) -> str | None:
+    """Extract token expiry ISO string from a dhan_credentials doc."""
+    if not doc or "encrypted" not in doc:
+        return None
+    try:
+        creds = decrypt_dict(doc["encrypted"])
+        token = creds.get("access_token")
+        if not token:
+            return None
+        exp = _jwt_expiry(token)
+        return exp.isoformat() if exp else None
+    except Exception:
+        return None
+
+
+async def _dhan_auto_auth_configured() -> bool:
+    try:
+        doc = await db.dhan_auto_auth.find_one({"_id": "dhan_totp"})
+        return bool(doc and doc.get("encrypted"))
+    except Exception:
+        return False
+
+
 async def _ensure_user_webhook_token(user_id: str) -> str:
     """Get or generate a user-level webhook token."""
     doc = await db.user_webhooks.find_one({"user_id": user_id}, {"_id": 0})
@@ -765,6 +894,8 @@ async def brokers_status(request: Request, user: User = Depends(require_user)):
             "has_credentials": bool(dhan_doc),
             "is_authenticated": dhan_client.is_authenticated(user.user_id),
             "last_login_at": (dhan_doc or {}).get("last_login_at"),
+            "token_expires_at": _dhan_token_expires(dhan_doc),
+            "auto_auth_configured": await _dhan_auto_auth_configured(),
         },
         "alice_blue": {
             "has_credentials": bool(alice_doc),
