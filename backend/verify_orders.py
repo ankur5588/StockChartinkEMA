@@ -80,19 +80,16 @@ def dhan_get_order_list(access_token: str, client_id: str) -> list[dict]:
         "client-id": client_id,
         "Content-Type": "application/json",
     }
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    r = requests.get(
-        f"{DHAN_BASE}/orders",
-        params={"from_date": today, "to_date": today},
-        headers=headers,
-        timeout=15,
-    )
+    r = requests.get(f"{DHAN_BASE}/orders", headers=headers, timeout=15)
     data = r.json()
-    if data.get("status") == "failure":
-        err = data.get("remarks", {})
-        raise Exception(f"Dhan API error: {err}")
-    orders = data.get("data") or data if isinstance(data, list) else data.get("data", [])
-    return orders if isinstance(orders, list) else []
+    if isinstance(data, dict):
+        if data.get("status") == "failure":
+            err = data.get("remarks", {})
+            raise Exception(f"Dhan API error: {err}")
+        return data.get("data") or []
+    if isinstance(data, list):
+        return data
+    return []
 
 
 def dhan_get_order_by_id(order_id: str, access_token: str, client_id: str) -> dict:
@@ -132,7 +129,9 @@ def show_order(o: dict, idx: int = 0) -> None:
     filled = str(o.get("filledQty") or o.get("filled_qty") or "0").rjust(4)
     price = str(o.get("price") or o.get("averageTradedPrice") or "0").rjust(8)
     oid = o.get("orderId") or o.get("dhanOrderId") or "?"
-    print(f"  {icon} #{idx:<2} {symbol} qty={qty} filled={filled} @{price}  {status}  id={oid}")
+    error = o.get("omsErrorDescription", "")
+    err_str = f"  ⚠ {error[:70]}" if error and error != "0" and "0001" not in error else ""
+    print(f"  {icon} #{idx:<2} {symbol} qty={qty} filled={filled} @{price}  {status}  id={oid}{err_str}")
 
 
 # ---------------------------------------------------------------------------
