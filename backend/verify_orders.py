@@ -178,14 +178,15 @@ def _upload_csv(path: str, user_id: str | None = None) -> None:
     print(f"Uploaded {count} symbol mappings for user {uid}")
 
 
-def _set_category_amount(category: str, amount: float, user_id: str | None = None) -> None:
+def _set_category_amount(category: str, pct: float, user_id: str | None = None) -> None:
+    """Set category percentage.  pct is a whole number (e.g. 10 = 10%), stored as decimal (0.10)."""
     uid = user_id or "user_13805a0b2618"
     _db.category_amounts.update_one(
         {"user_id": uid, "category": category},
-        {"$set": {"amount": float(amount)}},
+        {"$set": {"percentage": pct / 100.0}},
         upsert=True,
     )
-    print(f"Set {category} = ₹{amount:,.0f} for user {uid}")
+    print(f"Set {category} = {pct}% of available funds for user {uid}")
 
 
 def _ensure_alert_config(name: str, user_id: str | None = None) -> None:
@@ -224,7 +225,7 @@ def main():
     parser.add_argument("--user", type=str, default=None, help="MongoDB user_id")
     parser.add_argument("--store-dhan", nargs=2, metavar=("CLIENT_ID", "ACCESS_TOKEN"), help="Store Dhan credentials")
     parser.add_argument("--upload-csv", type=str, metavar="PATH", help="Upload symbol_mappings CSV")
-    parser.add_argument("--set-category", nargs=2, metavar=("CATEGORY", "AMOUNT"), help="Set category amount (e.g. 'Large Cap' 50000)")
+    parser.add_argument("--set-category", nargs=2, metavar=("CATEGORY", "PERCENT"), help="Set category %% of available funds (e.g. largecap 10)")
     parser.add_argument("--setup-alert", type=str, metavar="ALERT_NAME", help="Create a default alert config (e.g. BUY)")
     args = parser.parse_args()
 

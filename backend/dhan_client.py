@@ -324,6 +324,22 @@ def modify_sl_order(
     return {"ok": True, "order_id": order_id, "response": _clean(resp)}
 
 
+def get_available_funds(user_id: str) -> float:
+    """Fetch available balance from Dhan fund limits API."""
+    client = _get(user_id)
+    try:
+        resp = client.get_fund_limits()
+    except Exception as e:
+        _invalidate_on_auth_error(user_id, e)
+        raise DhanError(f"get_fund_limits failed: {e}")
+    data = resp.get("data") if isinstance(resp, dict) else resp
+    if isinstance(data, dict):
+        return float(data.get("availableBalance", 0))
+    if isinstance(data, list) and len(data) > 0:
+        return float(data[0].get("availableBalance", 0))
+    return 0.0
+
+
 def _clean(obj):
     if obj is None or isinstance(obj, (str, int, float, bool)):
         return obj

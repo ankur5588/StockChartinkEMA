@@ -28,10 +28,7 @@ from starlette.middleware.cors import CORSMiddleware
 import csv
 import io
 
-import kotak_client
 import dhan_client
-import alice_client
-import indmoney_client
 import delta_client
 import auth_service
 import telegram_notifier
@@ -40,7 +37,6 @@ from backtest_service import run_backtest, run_signal_backtest, NIFTY_100
 from models import (
     AlertConfig,
     AlertConfigInput,
-    AliceCredentialsInput,
     CategoryAmountInput,
     CategoryAmount,
     CATEGORIES,
@@ -49,10 +45,6 @@ from models import (
     EmaSchedule,
     EmaScheduleInput,
     EmaSlRun,
-    IndMoneyCredentialsInput,
-    KotakCredentialsInput,
-    KotakOtpInput,
-    KotakStatus,
     ManualOrderInput,
     SymbolMapping,
     SymbolMappingInput,
@@ -274,193 +266,11 @@ async def auth_logout(
     return {"ok": True}
 
 
-# =============================================================================
-# KOTAK NEO
-# =============================================================================
-
 def _base_url_from_request(request: Request) -> str:
     # Prefer forwarded host/proto if present (behind ingress)
     proto = request.headers.get("x-forwarded-proto", request.url.scheme)
     host = request.headers.get("x-forwarded-host") or request.headers.get("host")
     return f"{proto}://{host}"
-
-
-async def _get_creds_doc(user_id: str) -> Optional[dict]:
-    return await db.kotak_credentials.find_one({"user_id": user_id}, {"_id": 0})
-
-
-@api.post("/kotak/credentials")
-async def save_kotak_credentials(
-    payload: KotakCredentialsInput, user: User = Depends(require_user)
-):
-    # Strip whitespace - users commonly paste with trailing spaces/newlines
-    cleaned = {k: (v.strip() if isinstance(v, str) else v) for k, v in payload.model_dump().items()}
-    encrypted = encrypt_dict(cleaned)
-    existing = await _get_creds_doc(user.user_id)
-    webhook_token = existing.get("webhook_token") if existing else secrets.token_urlsafe(24)
-    now = datetime.now(timezone.utc).isoformat()
-    await db.kotak_credentials.update_one(
-        {"user_id": user.user_id},
-        {
-            "$set": {
-                "user_id": user.user_id,
-                "encrypted": encrypted,
-                "webhook_token": webhook_token,
-                "updated_at": now,
-            }
-        },
-        upsert=True,
-    )
-    return {"ok": True, "webhook_token": webhook_token}
-
-
-@api.delete("/kotak/credentials")
-async def delete_kotak_credentials(user: User = Depends(require_user)):
-    await db.kotak_credentials.delete_one({"user_id": user.user_id})
-    kotak_client.logout(user.user_id)
-    return {"ok": True}
-
-
-@api.get("/kotak/status", response_model=KotakStatus)
-async def kotak_status(request: Request, user: User = Depends(require_user)):
-    doc = await _get_creds_doc(user.user_id)
-    if not doc:
-        return KotakStatus(has_credentials=False, is_authenticated=False)
-    webhook_token = doc.get("webhook_token")
-    base = _base_url_from_request(request)
-    return KotakStatus(
-        has_credentials=True,
-        is_authenticated=kotak_client.is_authenticated(user.user_id),
-        webhook_token=webhook_token,
-        webhook_url=f"{base}/api/webhooks/chartink/{webhook_token}" if webhook_token else None,
-    )
-
-
-@api.post("/kotak/test-oauth")
-async def kotak_test_oauth(payload: dict, user: User = Depends(require_user)):
-    """Validate JUST the consumer_key + consumer_secret pair against Kotak's
-    OAuth endpoint without triggering a full login + OTP flow. Returns the
-    exact Kotak response so users can debug app activation / wrong key issues.
-    """
-    ck = (payload.get("consumer_key") or "").strip()
-    cs = (payload.get("consumer_secret") or "").strip()
-    env = (payload.get("environment") or "prod").lower()
-    if not ck or not cs:
-        # Fall back to saved credentials
-        doc = await _get_creds_doc(user.user_id)
-        if not doc:
-            raise HTTPException(status_code=400, detail="Provide consumer_key + consumer_secret or save credentials first")
-        saved = decrypt_dict(doc["encrypted"])
-        ck = ck or saved["consumer_key"]
-        cs = cs or saved["consumer_secret"]
-        env = env or (saved.get("environment") or "prod")
-    return kotak_client.test_oauth(ck, cs, env)
-
-
-@api.post("/kotak/login")
-async def kotak_login(user: User = Depends(require_user)):
-    doc = await _get_creds_doc(user.user_id)
-    if not doc:
-        raise HTTPException(status_code=400, detail="Save Kotak credentials first")
-    creds = decrypt_dict(doc["encrypted"])
-    try:
-        res = kotak_client.start_login(user.user_id, creds)
-    except kotak_client.KotakError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    return {"ok": True, "otp_required": True, "response": res.get("response")}
-
-
-@api.post("/kotak/verify-otp")
-async def kotak_verify_otp(payload: KotakOtpInput, user: User = Depends(require_user)):
-    try:
-        res = kotak_client.complete_2fa(user.user_id, payload.otp)
-    except kotak_client.KotakError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    await db.kotak_credentials.update_one(
-        {"user_id": user.user_id},
-        {"$set": {"last_login_at": datetime.now(timezone.utc).isoformat(), "ucc": res.get("ucc")}},
-    )
-    return {"ok": True, "ucc": res.get("ucc")}
-
-
-@api.post("/kotak/logout")
-async def kotak_logout(user: User = Depends(require_user)):
-    kotak_client.logout(user.user_id)
-    return {"ok": True}
-
-
-@api.get("/kotak/positions")
-async def kotak_positions(user: User = Depends(require_user)):
-    try:
-        raw = kotak_client.get_positions(user.user_id)
-    except kotak_client.KotakError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    positions = _normalise_positions(raw)
-    return {"positions": positions, "raw_count": len(raw)}
-
-
-@api.get("/kotak/holdings")
-async def kotak_holdings(user: User = Depends(require_user)):
-    try:
-        raw = kotak_client.get_holdings(user.user_id)
-    except kotak_client.KotakError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    return {"holdings": raw}
-
-
-def _normalise_positions(raw: list) -> List[dict]:
-    """Kotak Neo positions come in various keys - extract a clean shape."""
-    out = []
-    for p in raw or []:
-        if not isinstance(p, dict):
-            continue
-        sym = (
-            p.get("trdSym")
-            or p.get("sym")
-            or p.get("tradingSymbol")
-            or p.get("trading_symbol")
-            or p.get("symbol")
-            or "UNKNOWN"
-        ).upper()
-        # Quantities
-        def _f(*keys, default=0.0):
-            for k in keys:
-                v = p.get(k)
-                if v not in (None, "", "0"):
-                    try:
-                        return float(v)
-                    except Exception:
-                        pass
-            return default
-
-        qty = int(_f("netTrdQtyLot", "flBuyQty", "flSellQty", "quantity", "qty", default=0))
-        # Net qty = buyQty - sellQty
-        buy_qty = _f("flBuyQty", "cfBuyQty", "buyQty", default=0)
-        sell_qty = _f("flSellQty", "cfSellQty", "sellQty", default=0)
-        net_qty = int(buy_qty - sell_qty) if (buy_qty or sell_qty) else qty
-        avg = _f("buyAmt", "avgPrc", "avg_price", default=0.0)
-        # Avg price: if buyAmt was total then divide
-        if buy_qty and p.get("buyAmt"):
-            try:
-                avg = round(float(p["buyAmt"]) / buy_qty, 2)
-            except Exception:
-                pass
-        ltp = _f("ltp", "lastPrice", "last_price", default=None) or None
-        pnl = _f("urMtoM", "rlzdPnL", "mtom", default=None) or None
-        out.append(
-            {
-                "broker": "kotak_neo",
-                "symbol": sym,
-                "exchange_segment": p.get("exSeg") or p.get("exchange_segment") or "nse_cm",
-                "quantity": net_qty,
-                "avg_price": round(avg, 2) if avg else 0.0,
-                "ltp": round(ltp, 2) if ltp else None,
-                "pnl": round(pnl, 2) if pnl else None,
-                "product": p.get("prod") or p.get("product"),
-            }
-        )
-    # Only open positions
-    return [o for o in out if o["quantity"] != 0]
 
 
 # =============================================================================
@@ -634,134 +444,10 @@ async def dhan_positions(user: User = Depends(require_user)):
         raise HTTPException(status_code=400, detail=str(e))
 
 
-# =============================================================================
-# ALICE BLUE
-# =============================================================================
-
-@api.post("/alice/credentials")
-async def alice_save_credentials(payload: AliceCredentialsInput, user: User = Depends(require_user)):
-    creds = {k: v.strip() for k, v in payload.model_dump().items()}
-    encrypted = encrypt_dict(creds)
-    await db.alice_credentials.update_one(
-        {"user_id": user.user_id},
-        {"$set": {"user_id": user.user_id, "encrypted": encrypted,
-                  "updated_at": datetime.now(timezone.utc).isoformat()}},
-        upsert=True,
-    )
-    return {"ok": True}
 
 
-@api.delete("/alice/credentials")
-async def alice_delete_credentials(user: User = Depends(require_user)):
-    await db.alice_credentials.delete_one({"user_id": user.user_id})
-    alice_client.disconnect(user.user_id)
-    return {"ok": True}
 
 
-@api.get("/alice/status")
-async def alice_status(user: User = Depends(require_user)):
-    doc = await db.alice_credentials.find_one({"user_id": user.user_id}, {"_id": 0})
-    return {
-        "has_credentials": bool(doc),
-        "is_authenticated": alice_client.is_authenticated(user.user_id),
-        "last_login_at": (doc or {}).get("last_login_at"),
-    }
-
-
-@api.post("/alice/connect")
-async def alice_connect(user: User = Depends(require_user)):
-    doc = await db.alice_credentials.find_one({"user_id": user.user_id}, {"_id": 0})
-    if not doc:
-        raise HTTPException(status_code=400, detail="Save Alice Blue credentials first")
-    creds = decrypt_dict(doc["encrypted"])
-    try:
-        alice_client.connect(user.user_id, creds["user_id"], creds["api_key"])
-    except alice_client.AliceError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    await db.alice_credentials.update_one(
-        {"user_id": user.user_id},
-        {"$set": {"last_login_at": datetime.now(timezone.utc).isoformat()}},
-    )
-    return {"ok": True}
-
-
-@api.post("/alice/disconnect")
-async def alice_disconnect(user: User = Depends(require_user)):
-    alice_client.disconnect(user.user_id)
-    return {"ok": True}
-
-
-@api.get("/alice/positions")
-async def alice_positions(user: User = Depends(require_user)):
-    try:
-        return {"positions": alice_client.get_positions(user.user_id)}
-    except alice_client.AliceError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-# =============================================================================
-# INDMONEY
-# =============================================================================
-
-@api.post("/indmoney/credentials")
-async def indmoney_save_credentials(payload: IndMoneyCredentialsInput, user: User = Depends(require_user)):
-    creds = {k: v.strip() for k, v in payload.model_dump().items()}
-    encrypted = encrypt_dict(creds)
-    await db.indmoney_credentials.update_one(
-        {"user_id": user.user_id},
-        {"$set": {"user_id": user.user_id, "encrypted": encrypted,
-                  "updated_at": datetime.now(timezone.utc).isoformat()}},
-        upsert=True,
-    )
-    return {"ok": True}
-
-
-@api.delete("/indmoney/credentials")
-async def indmoney_delete_credentials(user: User = Depends(require_user)):
-    await db.indmoney_credentials.delete_one({"user_id": user.user_id})
-    indmoney_client.disconnect(user.user_id)
-    return {"ok": True}
-
-
-@api.get("/indmoney/status")
-async def indmoney_status(user: User = Depends(require_user)):
-    doc = await db.indmoney_credentials.find_one({"user_id": user.user_id}, {"_id": 0})
-    return {
-        "has_credentials": bool(doc),
-        "is_authenticated": indmoney_client.is_authenticated(user.user_id),
-        "last_login_at": (doc or {}).get("last_login_at"),
-    }
-
-
-@api.post("/indmoney/connect")
-async def indmoney_connect(user: User = Depends(require_user)):
-    doc = await db.indmoney_credentials.find_one({"user_id": user.user_id}, {"_id": 0})
-    if not doc:
-        raise HTTPException(status_code=400, detail="Save INDmoney credentials first")
-    creds = decrypt_dict(doc["encrypted"])
-    try:
-        indmoney_client.connect(user.user_id, creds["access_token"])
-    except indmoney_client.IndMoneyError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    await db.indmoney_credentials.update_one(
-        {"user_id": user.user_id},
-        {"$set": {"last_login_at": datetime.now(timezone.utc).isoformat()}},
-    )
-    return {"ok": True}
-
-
-@api.post("/indmoney/disconnect")
-async def indmoney_disconnect(user: User = Depends(require_user)):
-    indmoney_client.disconnect(user.user_id)
-    return {"ok": True}
-
-
-@api.get("/indmoney/positions")
-async def indmoney_positions(user: User = Depends(require_user)):
-    try:
-        return {"positions": indmoney_client.get_positions(user.user_id)}
-    except indmoney_client.IndMoneyError as e:
-        raise HTTPException(status_code=400, detail=str(e))
 
 
 # ---------------------------------------------------------------------------
@@ -863,9 +549,7 @@ async def _ensure_user_webhook_token(user_id: str) -> str:
     doc = await db.user_webhooks.find_one({"user_id": user_id}, {"_id": 0})
     if doc and doc.get("webhook_token"):
         return doc["webhook_token"]
-    # Fallback: reuse existing kotak webhook_token if present (backward compat)
-    legacy = await db.kotak_credentials.find_one({"user_id": user_id}, {"_id": 0})
-    token = (legacy or {}).get("webhook_token") or secrets.token_urlsafe(24)
+    token = secrets.token_urlsafe(24)
     await db.user_webhooks.update_one(
         {"user_id": user_id},
         {"$set": {"user_id": user_id, "webhook_token": token}},
@@ -876,36 +560,17 @@ async def _ensure_user_webhook_token(user_id: str) -> str:
 
 @api.get("/brokers/status")
 async def brokers_status(request: Request, user: User = Depends(require_user)):
-    kotak_doc = await _get_creds_doc(user.user_id)
     dhan_doc = await db.dhan_credentials.find_one({"user_id": user.user_id}, {"_id": 0})
-    alice_doc = await db.alice_credentials.find_one({"user_id": user.user_id}, {"_id": 0})
-    indmoney_doc = await db.indmoney_credentials.find_one({"user_id": user.user_id}, {"_id": 0})
     delta_doc = await db.delta_credentials.find_one({"user_id": user.user_id}, {"_id": 0})
     webhook_token = await _ensure_user_webhook_token(user.user_id)
     base = _base_url_from_request(request)
     return {
-        "kotak_neo": {
-            "has_credentials": bool(kotak_doc),
-            "is_authenticated": kotak_client.is_authenticated(user.user_id),
-            "ucc": (kotak_doc or {}).get("ucc"),
-            "last_login_at": (kotak_doc or {}).get("last_login_at"),
-        },
         "dhan": {
             "has_credentials": bool(dhan_doc),
             "is_authenticated": dhan_client.is_authenticated(user.user_id),
             "last_login_at": (dhan_doc or {}).get("last_login_at"),
             "token_expires_at": _dhan_token_expires(dhan_doc),
             "auto_auth_configured": await _dhan_auto_auth_configured(),
-        },
-        "alice_blue": {
-            "has_credentials": bool(alice_doc),
-            "is_authenticated": alice_client.is_authenticated(user.user_id),
-            "last_login_at": (alice_doc or {}).get("last_login_at"),
-        },
-        "indmoney": {
-            "has_credentials": bool(indmoney_doc),
-            "is_authenticated": indmoney_client.is_authenticated(user.user_id),
-            "last_login_at": (indmoney_doc or {}).get("last_login_at"),
         },
         "delta_exchange": {
             "has_credentials": bool(delta_doc),
@@ -922,26 +587,11 @@ async def all_positions(user: User = Depends(require_user)):
     """Aggregate positions from all authenticated brokers."""
     positions = []
     errors = {}
-    if kotak_client.is_authenticated(user.user_id):
-        try:
-            positions.extend(_normalise_positions(kotak_client.get_positions(user.user_id)))
-        except Exception as e:
-            errors["kotak_neo"] = str(e)
     if dhan_client.is_authenticated(user.user_id):
         try:
             positions.extend(dhan_client.get_positions(user.user_id))
         except Exception as e:
             errors["dhan"] = str(e)
-    if alice_client.is_authenticated(user.user_id):
-        try:
-            positions.extend(alice_client.get_positions(user.user_id))
-        except Exception as e:
-            errors["alice_blue"] = str(e)
-    if indmoney_client.is_authenticated(user.user_id):
-        try:
-            positions.extend(indmoney_client.get_positions(user.user_id))
-        except Exception as e:
-            errors["indmoney"] = str(e)
     if delta_client.is_authenticated(user.user_id):
         try:
             positions.extend(delta_client.get_positions(user.user_id))
@@ -967,26 +617,11 @@ async def portfolio_risk(user: User = Depends(require_user)):
     """
     rows = []
     errors = {}
-    if kotak_client.is_authenticated(user.user_id):
-        try:
-            rows.extend(_normalise_positions(kotak_client.get_positions(user.user_id)))
-        except Exception as e:
-            errors["kotak_neo"] = str(e)
     if dhan_client.is_authenticated(user.user_id):
         try:
             rows.extend(dhan_client.get_positions(user.user_id))
         except Exception as e:
             errors["dhan"] = str(e)
-    if alice_client.is_authenticated(user.user_id):
-        try:
-            rows.extend(alice_client.get_positions(user.user_id))
-        except Exception as e:
-            errors["alice_blue"] = str(e)
-    if indmoney_client.is_authenticated(user.user_id):
-        try:
-            rows.extend(indmoney_client.get_positions(user.user_id))
-        except Exception as e:
-            errors["indmoney"] = str(e)
 
     enriched: List[dict] = []
     missing_ema: List[dict] = []
@@ -1198,7 +833,7 @@ async def set_category_amount(payload: CategoryAmountInput, user: User = Depends
         raise HTTPException(status_code=400, detail=f"Invalid category: {cat}")
     await db.category_amounts.update_one(
         {"user_id": user.user_id, "category": cat},
-        {"$set": {"user_id": user.user_id, "category": cat, "amount": payload.amount,
+        {"$set": {"user_id": user.user_id, "category": cat, "percentage": payload.percentage,
                    "created_at": datetime.now(timezone.utc).isoformat()}},
         upsert=True,
     )
@@ -1238,7 +873,7 @@ async def upload_symbol_mappings_csv(request: Request, user: User = Depends(requ
         qty_raw = row.get("quantity") or row.get("qty") or ""
         amt_raw = row.get("amount") or row.get("amt") or ""
         broker = (row.get("broker") or "*").lower() or "*"
-        if broker not in ("kotak_neo", "dhan", "alice_blue", "indmoney", "delta_exchange", "*"):
+        if broker not in ("dhan", "delta_exchange", "*"):
             errors.append(f"line {line}: invalid broker '{broker}'")
             continue
         try:
@@ -1307,7 +942,7 @@ async def symbol_mappings_csv_template(user: User = Depends(require_user)):
     """Return a sample CSV that users can download as a starting point."""
     sample = (
         ",".join(CSV_COLUMNS) + "\n"
-        "RELIANCE,RELIANCE-EQ,1,,kotak_neo,B,CNC,large_cap\n"
+        "RELIANCE,RELIANCE-EQ,1,,dhan,B,CNC,large_cap\n"
         "TCS,TCS,,5000,dhan,B,CNC,large_cap\n"
         "INFY,INFY,5,,*,B,CNC,\n"
     )
@@ -1345,16 +980,10 @@ async def chartink_webhook(token: str, request: Request):
         form = await request.form()
         payload = dict(form)
 
-    # Find user by webhook token. Check the user_webhooks collection first,
-    # fall back to legacy kotak_credentials.webhook_token for backward compat.
     wh = await db.user_webhooks.find_one({"webhook_token": token}, {"_id": 0})
-    if wh:
-        user_id = wh["user_id"]
-    else:
-        cred = await db.kotak_credentials.find_one({"webhook_token": token}, {"_id": 0})
-        if not cred:
-            raise HTTPException(status_code=404, detail="Unknown webhook token")
-        user_id = cred["user_id"]
+    if not wh:
+        raise HTTPException(status_code=404, detail="Unknown webhook token")
+    user_id = wh["user_id"]
 
     stocks_raw = payload.get("stocks", "")
     prices_raw = payload.get("trigger_prices", "")
@@ -1389,9 +1018,18 @@ async def chartink_webhook(token: str, request: Request):
     if not cfg_doc:
         result_notes.append(f"No enabled config for alert '{alert_name}' - logged only.")
     else:
-        broker = cfg_doc.get("broker", "kotak_neo")
+        broker = cfg_doc.get("broker", "dhan")
         # Alert-name auto-detection wins over both alert-config and mapping side
         alert_name_side = _detect_side_from_alert_name(alert_name)
+
+        # Fetch available funds once per webhook call (only for brokers that support it)
+        available_funds = None
+        if broker == "dhan" and dhan_client.is_authenticated(user_id):
+            try:
+                available_funds = dhan_client.get_available_funds(user_id)
+            except Exception as e:
+                logger.warning("Failed to fetch available funds for %s: %s", user_id, e)
+
         for idx, sym in enumerate(stocks):
             price = prices[idx] if idx < len(prices) else None
 
@@ -1409,13 +1047,14 @@ async def chartink_webhook(token: str, request: Request):
                 elif mapping.get("amount") and price and price > 0:
                     order_qty = max(1, int(mapping["amount"] // price))
                 elif mapping.get("category") and price and price > 0:
-                    # Fall back to category amount
+                    # Fall back to category % of available funds
                     cat = await db.category_amounts.find_one(
                         {"user_id": user_id, "category": mapping["category"]},
-                        {"_id": 0, "amount": 1},
+                        {"_id": 0, "percentage": 1},
                     )
-                    if cat and cat.get("amount", 0) > 0:
-                        order_qty = max(1, int(cat["amount"] // price))
+                    if cat and cat.get("percentage", 0) > 0 and available_funds and available_funds > 0:
+                        cat_amount = available_funds * cat["percentage"]
+                        order_qty = max(1, int(cat_amount // price))
                 if mapping.get("transaction_type"):
                     order_txn = mapping["transaction_type"]
                 if mapping.get("product"):
@@ -1491,23 +1130,6 @@ def _route_order(user_id, broker, symbol, transaction_type, quantity, product,
                  amo=False):
     """Unified order router. Returns (status, order_id, message)."""
     try:
-        if broker == "kotak_neo":
-            if not kotak_client.is_authenticated(user_id):
-                return ("skipped", None, "Kotak Neo not authenticated")
-            resp = kotak_client.place_order(
-                user_id=user_id,
-                trading_symbol=symbol,
-                transaction_type=transaction_type,
-                quantity=quantity,
-                order_type=order_type,
-                product=product,
-                exchange_segment=exchange_segment,
-                price=str(price),
-                trigger_price=str(trigger_price),
-                amo=amo,
-            )
-            oid = (resp or {}).get("nOrdNo") or (resp or {}).get("orderId") or ((resp or {}).get("data") or {}).get("nOrdNo")
-            return ("success", oid, f"Order placed for {symbol}")
         if broker == "dhan":
             if not dhan_client.is_authenticated(user_id):
                 return ("skipped", None, "Dhan not authenticated")
@@ -1520,29 +1142,6 @@ def _route_order(user_id, broker, symbol, transaction_type, quantity, product,
                 amo=amo,
             )
             return ("success", resp.get("order_id"), f"Dhan order placed for {symbol}")
-        if broker == "alice_blue":
-            if not alice_client.is_authenticated(user_id):
-                return ("skipped", None, "Alice Blue not authenticated")
-            resp = alice_client.place_order(
-                user_id=user_id, symbol=symbol,
-                transaction_type=transaction_type, quantity=quantity,
-                order_type=order_type, product=product,
-                exchange=("NSE" if exchange_segment.lower().startswith("nse") else "BSE"),
-                price=float(price), trigger_price=float(trigger_price),
-                amo=amo,
-            )
-            return ("success", resp.get("order_id"), f"Alice order placed for {symbol}")
-        if broker == "indmoney":
-            if not indmoney_client.is_authenticated(user_id):
-                return ("skipped", None, "INDmoney not authenticated")
-            resp = indmoney_client.place_order(
-                user_id=user_id, symbol=symbol,
-                transaction_type=transaction_type, quantity=quantity,
-                order_type=order_type, product=product,
-                exchange_segment=("NSE" if exchange_segment.lower().startswith("nse") else "BSE"),
-                price=float(price), trigger_price=float(trigger_price),
-            )
-            return ("success", resp.get("order_id"), f"INDmoney order placed for {symbol}")
         if broker == "delta_exchange":
             if not delta_client.is_authenticated(user_id):
                 return ("skipped", None, "Delta Exchange not authenticated")
@@ -1555,7 +1154,7 @@ def _route_order(user_id, broker, symbol, transaction_type, quantity, product,
             )
             return ("success", resp.get("order_id"), f"Delta order placed for {symbol}")
         return ("error", None, f"Unknown broker '{broker}'")
-    except (kotak_client.KotakError, dhan_client.DhanError, alice_client.AliceError, indmoney_client.IndMoneyError, delta_client.DeltaError) as e:
+    except (dhan_client.DhanError, delta_client.DeltaError) as e:
         return ("error", None, str(e))
     except Exception as e:
         return ("error", None, f"unexpected: {e}")
@@ -1607,39 +1206,12 @@ def _place_ema_sl_for(user_id: str, broker: str, symbol: str, quantity: int,
     if limit_price >= trigger_price:
         limit_price = round_to_tick(trigger_price - tick, tick)
     try:
-        if broker == "kotak_neo":
-            resp = kotak_client.place_order(
-                user_id=user_id, trading_symbol=symbol,
-                transaction_type="S", quantity=quantity,
-                order_type="SL", product=product,
-                exchange_segment=exchange_segment,
-                price=str(limit_price), trigger_price=str(trigger_price),
-            )
-            oid = (resp or {}).get("nOrdNo") or (resp or {}).get("orderId")
-        elif broker == "dhan":
+        if broker == "dhan":
             resp = dhan_client.place_order(
                 user_id=user_id, symbol=symbol,
                 transaction_type="S", quantity=quantity,
                 order_type="SL", product=product,
                 exchange_segment="NSE_EQ" if exchange_segment.lower().startswith("nse") else "BSE_EQ",
-                price=limit_price, trigger_price=trigger_price,
-            )
-            oid = resp.get("order_id")
-        elif broker == "alice_blue":
-            resp = alice_client.place_order(
-                user_id=user_id, symbol=symbol,
-                transaction_type="S", quantity=quantity,
-                order_type="SL", product=product,
-                exchange=("NSE" if exchange_segment.lower().startswith("nse") else "BSE"),
-                price=limit_price, trigger_price=trigger_price,
-            )
-            oid = resp.get("order_id")
-        elif broker == "indmoney":
-            resp = indmoney_client.place_order(
-                user_id=user_id, symbol=symbol,
-                transaction_type="S", quantity=quantity,
-                order_type="SL", product=product,
-                exchange_segment=("NSE" if exchange_segment.lower().startswith("nse") else "BSE"),
                 price=limit_price, trigger_price=trigger_price,
             )
             oid = resp.get("order_id")
@@ -1655,7 +1227,7 @@ def _place_ema_sl_for(user_id: str, broker: str, symbol: str, quantity: int,
         else:
             return (ema, None, f"EMA10: unsupported broker '{broker}'")
         return (ema, oid, f"EMA10 SL placed @ {trigger_price} (limit {limit_price})")
-    except (kotak_client.KotakError, dhan_client.DhanError, alice_client.AliceError, indmoney_client.IndMoneyError, delta_client.DeltaError) as e:
+    except (dhan_client.DhanError, delta_client.DeltaError) as e:
         return (ema, None, f"EMA10 SL failed: {e}")
     except Exception as e:
         return (ema, None, f"EMA10 SL unexpected error: {e}")
@@ -1671,7 +1243,7 @@ async def place_manual_order(payload: ManualOrderInput, user: User = Depends(req
       amo (bool), auto_ema_sl (bool — places a SL-SELL after a long entry only).
     """
     broker = payload.broker
-    if broker not in ("kotak_neo", "dhan", "alice_blue", "indmoney", "delta_exchange"):
+    if broker not in ("dhan", "delta_exchange"):
         raise HTTPException(status_code=400, detail=f"Unsupported broker '{broker}'")
 
     # Place the main order
@@ -1814,24 +1386,12 @@ async def _run_ema_sl_for_user(user_id: str, connected: Optional[dict] = None) -
     """Core EMA SL logic — shared by POST /ema-sl/run and the background scheduler."""
     if connected is None:
         connected = {
-            "kotak_neo": kotak_client.is_authenticated(user_id),
             "dhan": dhan_client.is_authenticated(user_id),
-            "alice_blue": alice_client.is_authenticated(user_id),
-            "indmoney": indmoney_client.is_authenticated(user_id),
             "delta_exchange": delta_client.is_authenticated(user_id),
         }
 
     # Aggregate positions across all connected brokers
     all_positions: List[dict] = []
-    if connected.get("kotak_neo"):
-        try:
-            all_positions.extend(_normalise_positions(kotak_client.get_positions(user_id)))
-        except Exception as e:
-            logger.warning("kotak positions fetch failed: %s", e)
-        try:
-            all_positions.extend(_normalise_positions(kotak_client.get_holdings(user_id)))
-        except Exception as e:
-            logger.warning("kotak holdings fetch failed: %s", e)
     if connected.get("dhan"):
         try:
             all_positions.extend(dhan_client.get_positions(user_id))
@@ -1841,20 +1401,6 @@ async def _run_ema_sl_for_user(user_id: str, connected: Optional[dict] = None) -
             all_positions.extend(dhan_client.get_holdings(user_id))
         except Exception as e:
             logger.warning("dhan holdings fetch failed: %s", e)
-    if connected.get("alice_blue"):
-        try:
-            all_positions.extend(alice_client.get_positions(user_id))
-        except Exception as e:
-            logger.warning("alice positions fetch failed: %s", e)
-        try:
-            all_positions.extend(alice_client.get_holdings(user_id))
-        except Exception as e:
-            logger.warning("alice holdings fetch failed: %s", e)
-    if connected.get("indmoney"):
-        try:
-            all_positions.extend(indmoney_client.get_positions(user_id))
-        except Exception as e:
-            logger.warning("indmoney positions fetch failed: %s", e)
     if connected.get("delta_exchange"):
         try:
             all_positions.extend(delta_client.get_positions(user_id))
@@ -1878,7 +1424,7 @@ async def _run_ema_sl_for_user(user_id: str, connected: Optional[dict] = None) -
         if pos["quantity"] <= 0:
             continue  # Only long positions
         sym = pos["symbol"]
-        broker = pos.get("broker", "kotak_neo")
+        broker = pos.get("broker", "dhan")
         seg = pos.get("exchange_segment", "nse_cm")
         ema = compute_ema10(sym, seg)
         run = EmaSlRun(
@@ -1929,21 +1475,7 @@ async def _run_ema_sl_for_user(user_id: str, connected: Optional[dict] = None) -
                     order_price = 0 if use_slm else limit_price
                     msg_type = "SL-M" if use_slm else "SL"
 
-                    if broker == "kotak_neo":
-                        resp = kotak_client.place_order(
-                            user_id=user_id,
-                            trading_symbol=sym,
-                            transaction_type="S",
-                            quantity=pos["quantity"],
-                            order_type=ot,
-                            product=pos.get("product") or "CNC",
-                            exchange_segment=pos.get("exchange_segment", "nse_cm"),
-                            price=str(order_price),
-                            trigger_price=str(trigger_price),
-                            amo=True,
-                        )
-                        run.order_id = (resp or {}).get("nOrdNo") or (resp or {}).get("orderId")
-                    elif broker == "dhan":
+                    if broker == "dhan":
                         resp = dhan_client.place_order(
                             user_id=user_id, symbol=sym,
                             transaction_type="S", quantity=pos["quantity"],
@@ -1951,26 +1483,6 @@ async def _run_ema_sl_for_user(user_id: str, connected: Optional[dict] = None) -
                             exchange_segment=pos.get("exchange_segment", "NSE_EQ"),
                             price=order_price, trigger_price=trigger_price,
                             security_id=pos.get("security_id"),
-                            amo=True,
-                        )
-                        run.order_id = resp.get("order_id")
-                    elif broker == "alice_blue":
-                        resp = alice_client.place_order(
-                            user_id=user_id, symbol=sym,
-                            transaction_type="S", quantity=pos["quantity"],
-                            order_type=ot, product=pos.get("product") or "CNC",
-                            exchange=("NSE" if str(pos.get("exchange_segment", "NSE")).upper().startswith("NSE") else "BSE"),
-                            price=order_price, trigger_price=trigger_price,
-                            amo=True,
-                        )
-                        run.order_id = resp.get("order_id")
-                    elif broker == "indmoney":
-                        resp = indmoney_client.place_order(
-                            user_id=user_id, symbol=sym,
-                            transaction_type="S", quantity=pos["quantity"],
-                            order_type="SL", product=pos.get("product") or "CNC",
-                            exchange_segment=("NSE" if str(pos.get("exchange_segment", "NSE")).upper().startswith("NSE") else "BSE"),
-                            price=limit_price, trigger_price=trigger_price,
                             amo=True,
                         )
                         run.order_id = resp.get("order_id")
@@ -1987,7 +1499,7 @@ async def _run_ema_sl_for_user(user_id: str, connected: Optional[dict] = None) -
                     run.message = f"Placed {msg_type} at trigger {trigger_price} on {broker}"
                     if run.status != "updated":
                         run.status = "placed"
-            except (kotak_client.KotakError, dhan_client.DhanError, alice_client.AliceError, indmoney_client.IndMoneyError, delta_client.DeltaError) as e:
+            except (dhan_client.DhanError, delta_client.DeltaError) as e:
                 run.status = "error"
                 run.message = str(e)
             except Exception as e:
@@ -2028,10 +1540,7 @@ async def _run_ema_sl_for_user(user_id: str, connected: Optional[dict] = None) -
 @api.post("/ema-sl/run")
 async def ema_sl_run(user: User = Depends(require_user)):
     connected = {
-        "kotak_neo": kotak_client.is_authenticated(user.user_id),
         "dhan": dhan_client.is_authenticated(user.user_id),
-        "alice_blue": alice_client.is_authenticated(user.user_id),
-        "indmoney": indmoney_client.is_authenticated(user.user_id),
         "delta_exchange": delta_client.is_authenticated(user.user_id),
     }
     if not any(connected.values()):
@@ -2324,8 +1833,6 @@ async def _startup():
     _reconnect_count = 0
     for collection, mod, builder in (
         ("dhan_credentials", dhan_client, lambda c: (c["client_id"], c["access_token"])),
-        ("alice_credentials", alice_client, lambda c: (c["user_id"], c["api_key"])),
-        ("indmoney_credentials", indmoney_client, lambda c: (c["access_token"],)),
         ("delta_credentials", delta_client, lambda c: (c["api_key"], c["api_secret"], c.get("environment", "india_prod"))),
     ):
         try:

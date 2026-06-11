@@ -18,27 +18,9 @@ class User(BaseModel):
     created_at: datetime
 
 
-class KotakCredentialsInput(BaseModel):
-    mobile: str  # e.g. +919999999999
-    password: str
-    mpin: str
-    consumer_key: str
-    consumer_secret: str
-    environment: Optional[str] = "prod"  # "prod" or "uat"
-
-
 class DhanCredentialsInput(BaseModel):
     client_id: str
     access_token: str
-
-
-class AliceCredentialsInput(BaseModel):
-    user_id: str  # Alice Blue user id
-    api_key: str
-
-
-class IndMoneyCredentialsInput(BaseModel):
-    access_token: str  # Bearer token from indstocks.com/app/api-trading
 
 
 class DeltaCredentialsInput(BaseModel):
@@ -47,20 +29,7 @@ class DeltaCredentialsInput(BaseModel):
     environment: str = "india_prod"  # india_prod | global_prod | india_testnet | global_testnet
 
 
-BROKER_CHOICES = ("kotak_neo", "dhan", "alice_blue", "indmoney", "delta_exchange")
-
-
-class KotakStatus(BaseModel):
-    has_credentials: bool
-    is_authenticated: bool
-    ucc: Optional[str] = None
-    last_login_at: Optional[datetime] = None
-    webhook_token: Optional[str] = None
-    webhook_url: Optional[str] = None
-
-
-class KotakOtpInput(BaseModel):
-    otp: str  # OTP or MPIN-based 2FA code
+BROKER_CHOICES = ("dhan", "delta_exchange")
 
 
 class AlertConfigInput(BaseModel):
@@ -70,7 +39,7 @@ class AlertConfigInput(BaseModel):
     quantity: int = 1
     exchange_segment: str = "nse_cm"
     product: str = "CNC"
-    broker: str = "kotak_neo"  # which broker to route to
+    broker: str = "dhan"  # which broker to route to
 
 
 class SymbolMappingInput(BaseModel):
@@ -95,7 +64,7 @@ CATEGORIES = ("large_cap", "mid_cap", "small_cap", "other")
 
 class CategoryAmountInput(BaseModel):
     category: str  # large_cap | mid_cap | small_cap | other
-    amount: float  # rupee value used to auto-calc qty = floor(amount / trigger_price)
+    percentage: float = Field(..., gt=0, le=1.0, description="Fraction of available funds (0.10 = 10%)")
 
 
 class CategoryAmount(CategoryAmountInput):
@@ -174,7 +143,7 @@ class EmaSlRun(BaseModel):
 
 class ManualOrderInput(BaseModel):
     """Used by the dashboard 'place order manually' form."""
-    broker: str = "kotak_neo"  # kotak_neo | dhan | alice_blue
+    broker: str = "dhan"  # dhan | delta_exchange
     symbol: str
     transaction_type: str = "B"  # B | S
     quantity: int = Field(..., gt=0)

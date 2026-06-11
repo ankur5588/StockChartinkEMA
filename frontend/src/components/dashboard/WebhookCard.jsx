@@ -4,8 +4,8 @@ import { Button } from "@/components/ui/button";
 import { Check, Copy, Webhook } from "lucide-react";
 import { toast } from "sonner";
 
-export default function WebhookCard({ status }) {
-  const url = status?.webhook_url;
+export default function WebhookCard({ webhookToken, webhookUrl }) {
+  const url = webhookUrl;
   const [copied, setCopied] = useState(false);
 
   const copy = async () => {
