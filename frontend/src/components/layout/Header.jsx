@@ -1,11 +1,12 @@
 import React from "react";
-import { Activity, LogOut } from "lucide-react";
+import { Activity, LogOut, LayoutDashboard, TrendingUp } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { api, clearSessionToken } from "@/lib/api";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 
 export default function Header({ user }) {
   const navigate = useNavigate();
+  const location = useLocation();
   const handleLogout = async () => {
     try {
       await api.post("/auth/logout");
@@ -13,6 +14,7 @@ export default function Header({ user }) {
     clearSessionToken();
     navigate("/login", { replace: true });
   };
+  const isIb = location.pathname === "/ib";
   return (
     <header
       className="sticky top-0 z-40 bg-surface-1/95 backdrop-blur border-b border-border"
@@ -26,9 +28,30 @@ export default function Header({ user }) {
           <span className="font-mono text-xs tracking-[0.18em] uppercase">
             CHARTINK<span className="text-brand">•</span>TRADE
           </span>
-          <span className="hidden sm:inline-block ml-3 font-mono text-[10px] text-muted-foreground tracking-wider uppercase">
-            / terminal
-          </span>
+          <nav className="hidden sm:flex items-center gap-1 ml-4">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => navigate("/dashboard")}
+              className={`h-7 text-[10px] rounded-sm uppercase tracking-wider ${
+                !isIb ? "text-white bg-surface-2" : "text-muted-foreground"
+              }`}
+            >
+              <LayoutDashboard className="w-3 h-3 mr-1" />
+              Dashboard
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => navigate("/ib")}
+              className={`h-7 text-[10px] rounded-sm uppercase tracking-wider ${
+                isIb ? "text-white bg-surface-2" : "text-muted-foreground"
+              }`}
+            >
+              <TrendingUp className="w-3 h-3 mr-1" />
+              US Stocks
+            </Button>
+          </nav>
         </div>
 
         <div className="flex items-center gap-4">

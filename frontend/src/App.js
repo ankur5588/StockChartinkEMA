@@ -11,6 +11,7 @@ import {
 import { Toaster } from "@/components/ui/sonner";
 import Login from "@/pages/Login";
 import Dashboard from "@/pages/Dashboard";
+import IbkrDashboard from "@/pages/IbkrDashboard";
 import { api, setSessionToken, clearSessionToken } from "@/lib/api";
 
 // Module-level promise tracking the in-flight OAuth exchange. Survives
@@ -138,6 +139,14 @@ function AppRouter() {
         element={
           <ProtectedRoute>
             <Dashboard />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/ib"
+        element={
+          <ProtectedRoute>
+            <IbkrDashboard />
           </ProtectedRoute>
         }
       />

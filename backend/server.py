@@ -33,7 +33,7 @@ import delta_client
 import ibkr_client
 import auth_service
 import telegram_notifier
-from ema_service import compute_ema10
+from ema_service import compute_ema10, compute_ema10_us
 from backtest_service import run_backtest, run_signal_backtest, NIFTY_100
 from models import (
     AlertConfig,
@@ -718,6 +718,106 @@ async def us_signal(payload: UsSignalInput, user: User = Depends(require_user)):
         "order_id": result.get("order_id"),
         "order_status": result.get("status"),
     }
+
+
+# =============================================================================
+# IBKR EMA STOPLOSS
+# =============================================================================
+
+
+@api.post("/ib/ema-sl/run")
+async def ibkr_ema_sl_run(user: User = Depends(require_user)):
+    """Compute EMA10 for each open IB position and place a stop-loss order.
+
+    Uses yfinance for US stock data (direct ticker, no suffix needed).
+    Places a SELL STOP order at 98% of EMA10 for each qualifying position.
+    """
+    if not ibkr_client.is_authenticated(user.user_id):
+        raise HTTPException(status_code=400, detail="Interactive Brokers not connected")
+
+    try:
+        positions = ibkr_client.get_positions(user.user_id)
+    except ibkr_client.IbkrError as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch positions: {e}")
+
+    results = []
+    for pos in positions:
+        symbol = pos["symbol"]
+        qty = pos["quantity"]
+        if qty <= 0:
+            continue
+
+        ema10 = compute_ema10_us(symbol)
+        if ema10 is None:
+            results.append({"symbol": symbol, "status": "skipped", "message": "EMA10 not available"})
+            continue
+
+        sl_trigger = round(ema10 * 0.98, 2)
+        try:
+            result = ibkr_client.place_order(
+                user_id=user.user_id,
+                symbol=symbol,
+                transaction_type="S",
+                quantity=abs(qty),
+                order_type="LMT",
+                price=sl_trigger,
+                exchange_segment="SMART",
+            )
+        except ibkr_client.IbkrError as e:
+            results.append({"symbol": symbol, "status": "error", "message": str(e)})
+            continue
+
+        # Log to trade log
+        trade_log = TradeLog(
+            user_id=user.user_id,
+            symbol=symbol,
+            quantity=abs(qty),
+            price=sl_trigger,
+            transaction_type="S",
+            order_type="SL",
+            order_id=result.get("order_id"),
+            status=result.get("status", "unknown"),
+            message=f"IB EMA SL: EMA10={ema10}, trigger={sl_trigger}",
+            source="ib_ema_sl",
+        )
+        await db.trade_logs.insert_one(trade_log.model_dump())
+
+        # Log to EMA SL runs
+        await db.ema_sl_runs.insert_one({
+            "user_id": user.user_id,
+            "symbol": symbol,
+            "quantity": abs(qty),
+            "ema10": ema10,
+            "sl_trigger": sl_trigger,
+            "order_id": result.get("order_id"),
+            "status": result.get("status", "unknown"),
+            "message": f"SL placed at {sl_trigger}",
+            "broker": "interactive_brokers",
+            "created_at": datetime.now(timezone.utc),
+        })
+
+        results.append({
+            "symbol": symbol,
+            "status": "placed",
+            "ema10": ema10,
+            "sl_trigger": sl_trigger,
+            "order_id": result.get("order_id"),
+        })
+
+    return {"results": results, "total": len(results)}
+
+
+@api.get("/ib/ema-sl/logs")
+async def ibkr_ema_sl_logs(user: User = Depends(require_user), limit: int = 30):
+    cur = (
+        db.ema_sl_runs.find(
+            {"user_id": user.user_id, "broker": "interactive_brokers"},
+            {"_id": 0},
+        )
+        .sort("created_at", -1)
+        .limit(limit)
+    )
+    return {"logs": [c async for c in cur]}
 
 
 # =============================================================================

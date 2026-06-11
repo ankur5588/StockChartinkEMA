@@ -93,6 +93,20 @@ STALE_TTL_SECS = 604800      # 7 days — still usable if yfinance is down
 def compute_ema10(symbol: str, exchange_segment: str = "nse_cm") -> Optional[float]:
     """Return last EMA10 value on daily close. None if data unavailable."""
     ticker = _normalise_symbol(symbol, exchange_segment)
+    return _compute_ema10(ticker)
+
+
+def compute_ema10_us(symbol: str) -> Optional[float]:
+    """Return last EMA10 value for a US stock ticker on daily close.
+
+    US tickers are passed directly to yfinance without any suffix (e.g. 'AAPL').
+    """
+    ticker = symbol.upper().strip()
+    return _compute_ema10(ticker)
+
+
+def _compute_ema10(ticker: str) -> Optional[float]:
+    """Internal EMA10 computation shared by compute_ema10 and compute_ema10_us."""
     now = datetime.utcnow()
 
     # 1. Check cache
