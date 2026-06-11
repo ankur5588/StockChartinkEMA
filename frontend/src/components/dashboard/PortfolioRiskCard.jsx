@@ -14,11 +14,9 @@ import { toast } from "sonner";
 import { api } from "@/lib/api";
 
 const BROKER_LABELS = {
-  kotak_neo: "Kotak",
   dhan: "Dhan",
-  alice_blue: "Alice",
-  indmoney: "INDmoney",
   delta_exchange: "Delta",
+  interactive_brokers: "IB",
 };
 
 const inr = (n) => {

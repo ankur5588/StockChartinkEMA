@@ -16,16 +16,17 @@ import { toast } from "sonner";
 import { api } from "@/lib/api";
 
 const BROKERS = [
-  { value: "kotak_neo", label: "Kotak Neo" },
   { value: "dhan", label: "Dhan" },
-  { value: "alice_blue", label: "Alice Blue" },
-  { value: "indmoney", label: "INDmoney" },
   { value: "delta_exchange", label: "Delta Exchange" },
+  { value: "interactive_brokers", label: "Interactive Brokers" },
 ];
 
 const EXCHANGES = [
   { value: "nse_cm", label: "NSE" },
   { value: "bse_cm", label: "BSE" },
+  { value: "SMART", label: "SMART (US Stocks)" },
+  { value: "NASDAQ", label: "NASDAQ" },
+  { value: "NYSE", label: "NYSE" },
 ];
 
 const ORDER_TYPES = [
@@ -40,7 +41,7 @@ const PRODUCTS = [
 ];
 
 const blank = {
-  broker: "kotak_neo",
+  broker: "dhan",
   symbol: "",
   transaction_type: "B",
   quantity: "",

@@ -29,7 +29,14 @@ class DeltaCredentialsInput(BaseModel):
     environment: str = "india_prod"  # india_prod | global_prod | india_testnet | global_testnet
 
 
-BROKER_CHOICES = ("dhan", "delta_exchange")
+class InteractiveBrokersCredentialsInput(BaseModel):
+    account_id: str = ""
+    host: str = "127.0.0.1"
+    port: int = 4001  # 4001 for IB Gateway, 7497 for TWS
+    client_id: int = 2
+
+
+BROKER_CHOICES = ("dhan", "delta_exchange", "interactive_brokers")
 
 
 class AlertConfigInput(BaseModel):
@@ -150,6 +157,6 @@ class ManualOrderInput(BaseModel):
     order_type: str = "MKT"  # MKT | L
     price: float = 0.0  # used when order_type=L
     product: str = "CNC"  # CNC | MIS | NRML
-    exchange_segment: str = "nse_cm"  # nse_cm | bse_cm
+    exchange_segment: str = "nse_cm"  # nse_cm | bse_cm | NASDAQ | NYSE | SMART
     amo: bool = False  # After-Market Order flag
     auto_ema_sl: bool = False  # also place EMA10-based stoploss after entry

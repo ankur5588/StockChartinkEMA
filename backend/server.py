@@ -30,6 +30,7 @@ import io
 
 import dhan_client
 import delta_client
+import ibkr_client
 import auth_service
 import telegram_notifier
 from ema_service import compute_ema10
@@ -42,6 +43,7 @@ from models import (
     CATEGORIES,
     DeltaCredentialsInput,
     DhanCredentialsInput,
+    InteractiveBrokersCredentialsInput,
     EmaSchedule,
     EmaScheduleInput,
     EmaSlRun,
@@ -515,6 +517,209 @@ async def delta_positions(user: User = Depends(require_user)):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+# ---------------------------------------------------------------------------
+# Interactive Brokers
+# ---------------------------------------------------------------------------
+
+@api.post("/ib/credentials")
+async def ibkr_save_credentials(payload: InteractiveBrokersCredentialsInput, user: User = Depends(require_user)):
+    creds = {k: v.strip() if isinstance(v, str) else v for k, v in payload.model_dump().items()}
+    encrypted = encrypt_dict(creds)
+    await db.ibkr_credentials.update_one(
+        {"user_id": user.user_id},
+        {"$set": {"user_id": user.user_id, "encrypted": encrypted,
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return {"ok": True}
+
+
+@api.delete("/ib/credentials")
+async def ibkr_delete_credentials(user: User = Depends(require_user)):
+    await db.ibkr_credentials.delete_one({"user_id": user.user_id})
+    ibkr_client.disconnect(user.user_id)
+    return {"ok": True}
+
+
+@api.get("/ib/status")
+async def ibkr_status(user: User = Depends(require_user)):
+    doc = await db.ibkr_credentials.find_one({"user_id": user.user_id}, {"_id": 0})
+    account_value = None
+    is_auth = ibkr_client.is_authenticated(user.user_id)
+    if is_auth:
+        try:
+            account_value = ibkr_client.get_available_funds(user.user_id)
+        except Exception:
+            pass
+    return {
+        "has_credentials": bool(doc),
+        "is_authenticated": is_auth,
+        "account_value": account_value,
+        "last_login_at": (doc or {}).get("last_login_at"),
+    }
+
+
+@api.post("/ib/connect")
+async def ibkr_connect(user: User = Depends(require_user)):
+    doc = await db.ibkr_credentials.find_one({"user_id": user.user_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=400, detail="Save IB credentials first")
+    creds = decrypt_dict(doc["encrypted"])
+    try:
+        ibkr_client.connect(
+            user.user_id,
+            host=creds.get("host", "127.0.0.1"),
+            port=int(creds.get("port", 4001)),
+            client_id=int(creds.get("client_id", 2)),
+        )
+    except ibkr_client.IbkrError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await db.ibkr_credentials.update_one(
+        {"user_id": user.user_id},
+        {"$set": {"last_login_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    # Load S&P 500 list on connect
+    snp_path = Path(__file__).parent.parent / "data" / "snp500.csv"
+    if snp_path.exists():
+        ibkr_client.load_snp500(str(snp_path))
+    return {"ok": True}
+
+
+@api.post("/ib/disconnect")
+async def ibkr_disconnect(user: User = Depends(require_user)):
+    ibkr_client.disconnect(user.user_id)
+    return {"ok": True}
+
+
+@api.get("/ib/positions")
+async def ibkr_positions(user: User = Depends(require_user)):
+    try:
+        return {"positions": ibkr_client.get_positions(user.user_id)}
+    except ibkr_client.IbkrError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# =============================================================================
+# SIGNALS ENDPOINT (US Stocks from Screener)
+# =============================================================================
+
+
+class UsSignalInput(BaseModel):
+    action: str = "buy"  # buy | sell
+    symbol: str
+    price: Optional[float] = None
+    source: str = "us_screener"
+    date: Optional[str] = None
+
+
+@api.post("/api/signals/us")
+async def us_signal(payload: UsSignalInput, user: User = Depends(require_user)):
+    """Receive a US stock signal from the screener and place an order via IB.
+
+    Allocation rules:
+      - S&P 500 stocks → 10% of available funds
+      - All other US stocks → 5% of available funds
+
+    Quantity = floor(available_funds * category_pct / price)
+    """
+    if not ibkr_client.is_authenticated(user.user_id):
+        raise HTTPException(status_code=400, detail="Interactive Brokers not connected")
+
+    symbol = payload.symbol.strip().upper()
+    action = payload.action.strip().lower()
+    if action not in ("buy", "sell"):
+        raise HTTPException(status_code=400, detail="action must be 'buy' or 'sell'")
+
+    txn_type = "B" if action == "buy" else "S"
+
+    # Determine category percentage
+    pct = ibkr_client.get_category_pct(symbol)
+
+    # Fetch available funds
+    try:
+        funds = ibkr_client.get_available_funds(user.user_id)
+    except ibkr_client.IbkrError as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch IB funds: {e}")
+
+    if funds <= 0:
+        raise HTTPException(status_code=400, detail="No available funds in IB account")
+
+    # Fetch current price if not provided
+    if not payload.price or payload.price <= 0:
+        ib = ibkr_client._get(user.user_id)
+        try:
+            contract = Stock(symbol, "SMART", "USD")
+            qualified = ib.qualifyContracts(contract)
+            if qualified:
+                ticker = ib.reqMktData(qualified[0], "", False, False)
+                ib.sleep(1)
+                price = ticker.marketPrice()
+                if not price or price <= 0:
+                    price = ticker.close()
+                payload_price = float(price) if price else None
+            else:
+                payload_price = None
+        except Exception:
+            payload_price = None
+    else:
+        payload_price = float(payload.price)
+
+    if not payload_price or payload_price <= 0:
+        raise HTTPException(status_code=400, detail="Could not determine price for symbol")
+
+    # Compute quantity
+    qty = int(funds * pct / payload_price)
+    if qty < 1:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Insufficient funds: ${funds:.2f} × {pct*100:.0f}% = ${funds*pct:.2f} / ${payload_price:.2f} = 0 shares"
+        )
+
+    # Check S&P 500 status for logging
+    in_sp500 = ibkr_client.is_snp500(symbol)
+    category = "sp500" if in_sp500 else "us_other"
+
+    # Place the order
+    try:
+        result = ibkr_client.place_order(
+            user_id=user.user_id,
+            symbol=symbol,
+            transaction_type=txn_type,
+            quantity=qty,
+            order_type="MKT",
+            exchange_segment="SMART",
+        )
+    except ibkr_client.IbkrError as e:
+        raise HTTPException(status_code=502, detail=f"Order failed: {e}")
+
+    # Log the trade
+    from models import TradeLog
+    await db.trade_logs.insert_one(TradeLog(
+        user_id=user.user_id,
+        symbol=symbol,
+        quantity=qty,
+        price=payload_price,
+        transaction_type=txn_type,
+        order_type="MKT",
+        order_id=result.get("order_id"),
+        status=result.get("status", "unknown"),
+        message=f"US signal: {category} ({pct*100:.0f}% of ${funds:.2f})",
+        source="us_signal",
+    ).model_dump())
+
+    return {
+        "status": "success",
+        "symbol": symbol,
+        "quantity": qty,
+        "price": payload_price,
+        "category": category,
+        "allocation_pct": pct * 100,
+        "available_funds": funds,
+        "order_id": result.get("order_id"),
+        "order_status": result.get("status"),
+    }
+
+
 # =============================================================================
 # UNIFIED BROKERS & POSITIONS
 # =============================================================================
@@ -562,8 +767,18 @@ async def _ensure_user_webhook_token(user_id: str) -> str:
 async def brokers_status(request: Request, user: User = Depends(require_user)):
     dhan_doc = await db.dhan_credentials.find_one({"user_id": user.user_id}, {"_id": 0})
     delta_doc = await db.delta_credentials.find_one({"user_id": user.user_id}, {"_id": 0})
+    ibkr_doc = await db.ibkr_credentials.find_one({"user_id": user.user_id}, {"_id": 0})
     webhook_token = await _ensure_user_webhook_token(user.user_id)
     base = _base_url_from_request(request)
+
+    ibkr_is_auth = ibkr_client.is_authenticated(user.user_id)
+    ibkr_account_value = None
+    if ibkr_is_auth:
+        try:
+            ibkr_account_value = ibkr_client.get_available_funds(user.user_id)
+        except Exception:
+            pass
+
     return {
         "dhan": {
             "has_credentials": bool(dhan_doc),
@@ -576,6 +791,12 @@ async def brokers_status(request: Request, user: User = Depends(require_user)):
             "has_credentials": bool(delta_doc),
             "is_authenticated": delta_client.is_authenticated(user.user_id),
             "last_login_at": (delta_doc or {}).get("last_login_at"),
+        },
+        "interactive_brokers": {
+            "has_credentials": bool(ibkr_doc),
+            "is_authenticated": ibkr_is_auth,
+            "account_value": ibkr_account_value,
+            "last_login_at": (ibkr_doc or {}).get("last_login_at"),
         },
         "webhook_token": webhook_token,
         "webhook_url": f"{base}/api/webhooks/chartink/{webhook_token}",
@@ -597,6 +818,11 @@ async def all_positions(user: User = Depends(require_user)):
             positions.extend(delta_client.get_positions(user.user_id))
         except Exception as e:
             errors["delta_exchange"] = str(e)
+    if ibkr_client.is_authenticated(user.user_id):
+        try:
+            positions.extend(ibkr_client.get_positions(user.user_id))
+        except Exception as e:
+            errors["interactive_brokers"] = str(e)
     return {"positions": positions, "errors": errors}
 
 
@@ -1153,8 +1379,19 @@ def _route_order(user_id, broker, symbol, transaction_type, quantity, product,
                 price=float(price), trigger_price=float(trigger_price),
             )
             return ("success", resp.get("order_id"), f"Delta order placed for {symbol}")
+        if broker == "interactive_brokers":
+            if not ibkr_client.is_authenticated(user_id):
+                return ("skipped", None, "Interactive Brokers not authenticated")
+            resp = ibkr_client.place_order(
+                user_id=user_id, symbol=symbol,
+                transaction_type=transaction_type, quantity=quantity,
+                order_type=order_type, product=product,
+                exchange_segment=exchange_segment or "SMART",
+                price=float(price), trigger_price=float(trigger_price),
+            )
+            return ("success", resp.get("order_id"), f"IB order placed for {symbol}")
         return ("error", None, f"Unknown broker '{broker}'")
-    except (dhan_client.DhanError, delta_client.DeltaError) as e:
+    except (dhan_client.DhanError, delta_client.DeltaError, ibkr_client.IbkrError) as e:
         return ("error", None, str(e))
     except Exception as e:
         return ("error", None, f"unexpected: {e}")
@@ -1834,6 +2071,7 @@ async def _startup():
     for collection, mod, builder in (
         ("dhan_credentials", dhan_client, lambda c: (c["client_id"], c["access_token"])),
         ("delta_credentials", delta_client, lambda c: (c["api_key"], c["api_secret"], c.get("environment", "india_prod"))),
+        ("ibkr_credentials", ibkr_client, lambda c: (c.get("host", "127.0.0.1"), int(c.get("port", 4001)), int(c.get("client_id", 2)))),
     ):
         try:
             async for doc in db[collection].find({}, {"_id": 0, "user_id": 1, "encrypted": 1}):
@@ -1849,6 +2087,11 @@ async def _startup():
                     logger.warning("Auto-reconnect failed for %s user %s: %s", collection, uid, e)
         except Exception as e:
             logger.warning("Failed to scan %s for reconnect: %s", collection, e)
+    # Load S&P 500 list for IBKR
+    snp_path = ROOT_DIR.parent / "data" / "snp500.csv"
+    if snp_path.exists():
+        ibkr_client.load_snp500(str(snp_path))
+
     logger.info("Reconnected %d broker session(s) on startup", _reconnect_count)
 
     _scheduler_task = asyncio.create_task(_ema_scheduler_loop())

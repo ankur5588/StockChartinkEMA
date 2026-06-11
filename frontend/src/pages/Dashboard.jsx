@@ -3,6 +3,7 @@ import Header from "@/components/layout/Header";
 import LiveBanner from "@/components/layout/LiveBanner";
 import DhanCard from "@/components/dashboard/DhanCard";
 import DeltaCard from "@/components/dashboard/DeltaCard";
+import IbkrCard from "@/components/dashboard/IbkrCard";
 import WebhookCard from "@/components/dashboard/WebhookCard";
 import EmaPanel from "@/components/dashboard/EmaPanel";
 import AlertsConfig from "@/components/dashboard/AlertsConfig";
@@ -35,7 +36,8 @@ export default function Dashboard({ user }) {
 
   const anyAuth =
     !!status?.dhan?.is_authenticated ||
-    !!status?.delta_exchange?.is_authenticated;
+    !!status?.delta_exchange?.is_authenticated ||
+    !!status?.interactive_brokers?.is_authenticated;
 
   return (
     <div
@@ -65,9 +67,10 @@ export default function Dashboard({ user }) {
           <div className="text-[10px] uppercase tracking-[0.2em] text-muted-foreground font-semibold mb-3">
             / brokers
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             <DhanCard status={status?.dhan} reload={loadStatus} />
             <DeltaCard status={status?.delta_exchange} reload={loadStatus} />
+            <IbkrCard status={status?.interactive_brokers} reload={loadStatus} />
           </div>
         </section>
 
