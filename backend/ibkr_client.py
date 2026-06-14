@@ -15,6 +15,7 @@ Products (mapped from internal codes):
   - CNC / MIS / NRML → not used for US stocks (always SMART routing)
 """
 from __future__ import annotations
+import csv
 import logging
 from typing import Any, Dict, Optional
 

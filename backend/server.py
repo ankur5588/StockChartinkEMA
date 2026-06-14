@@ -612,7 +612,7 @@ class UsSignalInput(BaseModel):
     date: Optional[str] = None
 
 
-@api.post("/api/signals/us")
+@api.post("/signals/us")
 async def us_signal(payload: UsSignalInput, user: User = Depends(require_user)):
     """Receive a US stock signal from the screener and place an order via IB.
 
@@ -1393,8 +1393,8 @@ async def chartink_webhook(token: str, request: Request):
                     order_txn = mapping["transaction_type"]
                 if mapping.get("product"):
                     order_product = mapping["product"]
-                if not mapping_note:
-                    mapping_note = f" (mapped: {sym}→{order_symbol}, qty={order_qty})"
+            if not mapping_note:
+                mapping_note = f" (qty={order_qty})"
 
             # Alert name BUY/SELL keyword wins last (highest priority)
             if alert_name_side:
