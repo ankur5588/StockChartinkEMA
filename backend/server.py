@@ -1368,12 +1368,8 @@ async def chartink_webhook(token: str, request: Request):
             mapping_note = ""
             if mapping:
                 order_symbol = mapping.get("nse_symbol") or sym
-                if mapping.get("quantity"):
-                    order_qty = int(mapping["quantity"])
-                elif mapping.get("amount") and price and price > 0:
-                    order_qty = max(1, int(mapping["amount"] // price))
-                elif mapping.get("category") and price and price > 0:
-                    # Fall back to category % of available funds
+                qty_from_pct = False
+                if mapping.get("category") and price and price > 0:
                     cat = await db.category_amounts.find_one(
                         {"user_id": user_id, "category": mapping["category"]},
                         {"_id": 0, "percentage": 1},
@@ -1381,11 +1377,24 @@ async def chartink_webhook(token: str, request: Request):
                     if cat and cat.get("percentage", 0) > 0 and available_funds and available_funds > 0:
                         cat_amount = available_funds * cat["percentage"]
                         order_qty = max(1, int(cat_amount // price))
+                        qty_from_pct = True
+                        pct_label = f"{cat['percentage']*100:.0f}%"
+                        mapping_note = (
+                            f" ({sym}→{order_symbol}, "
+                            f"{mapping['category']} {pct_label} of ${available_funds:.2f}="
+                            f"{int(cat_amount)}→qty={order_qty})"
+                        )
+                if not qty_from_pct:
+                    if mapping.get("quantity"):
+                        order_qty = int(mapping["quantity"])
+                    elif mapping.get("amount") and price and price > 0:
+                        order_qty = max(1, int(mapping["amount"] // price))
                 if mapping.get("transaction_type"):
                     order_txn = mapping["transaction_type"]
                 if mapping.get("product"):
                     order_product = mapping["product"]
-                mapping_note = f" (mapped: {sym}→{order_symbol}, qty={order_qty})"
+                if not mapping_note:
+                    mapping_note = f" (mapped: {sym}→{order_symbol}, qty={order_qty})"
 
             # Alert name BUY/SELL keyword wins last (highest priority)
             if alert_name_side:
